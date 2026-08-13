@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Routes, Route, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
 import { Plus, X, Pencil, ArrowLeft, Sparkles, GripVertical, RotateCcw, Check, Trash2 } from "lucide-react";
 
 /* ---------------------------------------------------------------
@@ -106,7 +107,11 @@ async function storageSet(key, value) {
 
 /* ---------------- shared UI atoms ---------------- */
 
-function TopBar({ view, setView }) {
+function TopBar() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isMain = location.pathname === "/";
+  const isThemes = location.pathname.startsWith("/themes");
   return (
     <div style={styles.topBar}>
       <div style={styles.topBarBrand}>
@@ -115,14 +120,14 @@ function TopBar({ view, setView }) {
       </div>
       <div style={styles.topBarNav}>
         <button
-          onClick={() => setView("main")}
-          style={{ ...styles.navBtn, ...(view === "main" ? styles.navBtnActive : {}) }}
+          onClick={() => navigate("/")}
+          style={{ ...styles.navBtn, ...(isMain ? styles.navBtnActive : {}) }}
         >
           Board
         </button>
         <button
-          onClick={() => setView("themes")}
-          style={{ ...styles.navBtn, ...(view === "themes" ? styles.navBtnActive : {}) }}
+          onClick={() => navigate("/themes")}
+          style={{ ...styles.navBtn, ...(isThemes ? styles.navBtnActive : {}) }}
         >
           Themes
         </button>
@@ -180,13 +185,14 @@ function EditModal({ title, value, onCancel, onSave, multiline }) {
 
 /* ---------------- main board ---------------- */
 
-function MainBoard({ meta, setMeta, tables, onOpenTable, onAddTable, setView }) {
+function MainBoard({ meta, setMeta, tables, onAddTable }) {
+  const navigate = useNavigate();
   const [editingQ, setEditingQ] = useState(false);
   const totalAnswers = tables.reduce((s, t) => s + t.answers.length, 0);
 
   return (
     <div style={styles.page}>
-      <TopBar view="main" setView={setView} />
+      <TopBar />
       <div style={styles.mainHead}>
         <div style={styles.eyebrow}>THE QUESTION ON THE FLOOR</div>
         <div style={styles.questionRow}>
@@ -213,7 +219,12 @@ function MainBoard({ meta, setMeta, tables, onOpenTable, onAddTable, setView }) 
         </button>
 
         {tables.map((t, i) => (
-          <button key={t.id} className="wc-tile" style={styles.tableTile} onClick={() => onOpenTable(t.id)}>
+          <button
+            key={t.id}
+            className="wc-tile"
+            style={styles.tableTile}
+            onClick={() => navigate(`/table/${t.id}`)}
+          >
             <div style={styles.tileTent} />
             <div style={styles.tileNumber}>{String(i + 1).padStart(2, "0")}</div>
             <div style={styles.tileName}>{t.name}</div>
@@ -232,7 +243,7 @@ function MainBoard({ meta, setMeta, tables, onOpenTable, onAddTable, setView }) 
             Generate topical themes from every idea across every table.
           </div>
         </div>
-        <button style={styles.btnGold} onClick={() => setView("themes")}>
+        <button style={styles.btnGold} onClick={() => navigate("/themes")}>
           <Sparkles size={16} style={{ marginRight: 8 }} />
           Generate themes
         </button>
@@ -256,10 +267,15 @@ function MainBoard({ meta, setMeta, tables, onOpenTable, onAddTable, setView }) 
 
 /* ---------------- table detail page ---------------- */
 
-function TablePage({ table, meta, setMeta, onAddAnswer, onRemoveAnswer, onBack, setView }) {
+function TablePage({ tables, meta, setMeta, onAddAnswer, onRemoveAnswer }) {
+  const navigate = useNavigate();
+  const { tableId } = useParams();
+  const table = tables.find((t) => t.id === tableId);
   const [draft, setDraft] = useState("");
   const [editingQ, setEditingQ] = useState(false);
   const [hoverId, setHoverId] = useState(null);
+
+  if (!table) return <Navigate to="/" replace />;
 
   const submit = () => {
     const text = draft.trim();
@@ -270,9 +286,9 @@ function TablePage({ table, meta, setMeta, onAddAnswer, onRemoveAnswer, onBack, 
 
   return (
     <div style={styles.page}>
-      <TopBar view="table" setView={setView} />
+      <TopBar />
       <div style={styles.tableHeadWrap}>
-        <button style={styles.backLink} onClick={onBack}>
+        <button style={styles.backLink} onClick={() => navigate("/")}>
           <ArrowLeft size={15} style={{ marginRight: 6 }} />
           Board
         </button>
@@ -330,7 +346,7 @@ function TablePage({ table, meta, setMeta, onAddAnswer, onRemoveAnswer, onBack, 
       </div>
 
       <div style={styles.endRow}>
-        <button style={styles.btnDark} onClick={onBack}>
+        <button style={styles.btnDark} onClick={() => navigate("/")}>
           End
         </button>
       </div>
@@ -357,10 +373,9 @@ function ThemesPage({
   tables,
   themesData,
   setThemesData,
-  onBack,
-  setView,
   autoTriggeredRef,
 }) {
+  const navigate = useNavigate();
   const [status, setStatus] = useState("idle"); // idle | loading | error
   const [errMsg, setErrMsg] = useState("");
   const [newThemeDraft, setNewThemeDraft] = useState("");
@@ -479,9 +494,9 @@ function ThemesPage({
 
   return (
     <div style={styles.page}>
-      <TopBar view="themes" setView={setView} />
+      <TopBar />
       <div style={styles.tableHeadWrap}>
-        <button style={styles.backLink} onClick={onBack}>
+        <button style={styles.backLink} onClick={() => navigate("/")}>
           <ArrowLeft size={15} style={{ marginRight: 6 }} />
           Board
         </button>
@@ -669,9 +684,8 @@ function ThemesPage({
 /* ---------------- root ---------------- */
 
 export default function App() {
+  const navigate = useNavigate();
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState("main");
-  const [activeTableId, setActiveTableId] = useState(null);
   const [meta, setMetaState] = useState(DEFAULT_META);
   const [tables, setTablesState] = useState([]);
   const [themesData, setThemesDataState] = useState({ generated: false, themes: [] });
@@ -722,13 +736,7 @@ export default function App() {
     const nextTable = { id: uid(), name: `Table ${tables.length + 1}`, answers: [] };
     const next = [...tables, nextTable];
     setTables(next);
-    setActiveTableId(nextTable.id);
-    setView("table");
-  };
-
-  const handleOpenTable = (id) => {
-    setActiveTableId(id);
-    setView("table");
+    navigate(`/table/${nextTable.id}`);
   };
 
   const handleAddAnswer = (tableId, text) => {
@@ -756,43 +764,42 @@ export default function App() {
     );
   }
 
-  const activeTable = tables.find((t) => t.id === activeTableId);
-
   return (
     <div style={styles.appShell}>
       <style>{FONTS}</style>
-      {view === "main" && (
-        <MainBoard
-          meta={meta}
-          setMeta={setMeta}
-          tables={tables}
-          onOpenTable={handleOpenTable}
-          onAddTable={handleAddTable}
-          setView={setView}
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <MainBoard meta={meta} setMeta={setMeta} tables={tables} onAddTable={handleAddTable} />
+          }
         />
-      )}
-      {view === "table" && activeTable && (
-        <TablePage
-          table={activeTable}
-          meta={meta}
-          setMeta={setMeta}
-          onAddAnswer={handleAddAnswer}
-          onRemoveAnswer={handleRemoveAnswer}
-          onBack={() => setView("main")}
-          setView={setView}
+        <Route
+          path="/table/:tableId"
+          element={
+            <TablePage
+              tables={tables}
+              meta={meta}
+              setMeta={setMeta}
+              onAddAnswer={handleAddAnswer}
+              onRemoveAnswer={handleRemoveAnswer}
+            />
+          }
         />
-      )}
-      {view === "themes" && (
-        <ThemesPage
-          meta={meta}
-          tables={tables}
-          themesData={themesData}
-          setThemesData={setThemesData}
-          onBack={() => setView("main")}
-          setView={setView}
-          autoTriggeredRef={autoTriggeredRef}
+        <Route
+          path="/themes"
+          element={
+            <ThemesPage
+              meta={meta}
+              tables={tables}
+              themesData={themesData}
+              setThemesData={setThemesData}
+              autoTriggeredRef={autoTriggeredRef}
+            />
+          }
         />
-      )}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </div>
   );
 }
