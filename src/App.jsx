@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { Routes, Route, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
 import { Plus, X, Pencil, ArrowLeft, Sparkles, GripVertical, RotateCcw, Check, Trash2, MessageSquareText } from "lucide-react";
 import { buildThemePrompt } from "./promptTemplate.js";
+import { buildSeedQuestions } from "./seedQuestions.js";
+import { uid } from "./uid.js";
 
 /* ---------------------------------------------------------------
    World Café — rapid sensemaking board for assemblies & world cafes
@@ -31,64 +33,7 @@ const TEXT_DARK = "#241F16";
 const TEXT_MUTE = "#948C77";
 const CREAM_TEXT = "#EDE7D6";
 
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-
-const DEFAULT_META = {
-  mainQuestion: "What do you think the government should do about AI and the economy?",
-  tableQuestion: "What do you think?",
-};
-
-function seedTables() {
-  return [
-    {
-      id: uid(),
-      name: "Table 1",
-      answers: [
-        { id: uid(), text: "Guarantee a basic income to offset job losses from automation" },
-        { id: uid(), text: "Require companies to retrain workers displaced by AI systems" },
-        { id: uid(), text: "Tax AI-driven productivity gains to fund public services" },
-      ],
-    },
-    {
-      id: uid(),
-      name: "Table 2",
-      answers: [
-        { id: uid(), text: "Slow down deployment until real safety standards exist" },
-        { id: uid(), text: "Create a federal agency dedicated to regulating AI risk" },
-        { id: uid(), text: "Break up companies that control both data and models" },
-        { id: uid(), text: "Protect artists and writers from unauthorized AI training" },
-      ],
-    },
-    {
-      id: uid(),
-      name: "Table 3",
-      answers: [
-        { id: uid(), text: "Invest heavily in AI literacy inside public schools" },
-        { id: uid(), text: "Fund community colleges to teach in-demand AI-adjacent skills" },
-        { id: uid(), text: "Make trade apprenticeships free for workers who get displaced" },
-      ],
-    },
-    {
-      id: uid(),
-      name: "Table 4",
-      answers: [
-        { id: uid(), text: "Let the market sort winners and losers, avoid heavy rules" },
-        { id: uid(), text: "Cut red tape so American AI firms can compete globally" },
-        { id: uid(), text: "Give tax breaks to companies keeping AI jobs domestic" },
-      ],
-    },
-    {
-      id: uid(),
-      name: "Table 5",
-      answers: [
-        { id: uid(), text: "Ensure rural communities get the same access to AI tools" },
-        { id: uid(), text: "Require disclosure when AI makes a hiring or lending call" },
-        { id: uid(), text: "Fund a public research option outside of Big Tech" },
-        { id: uid(), text: "Give workers a formal say in automation decisions" },
-      ],
-    },
-  ];
-}
+const QuestionsContext = createContext(null);
 
 async function storageGet(key) {
   try {
@@ -111,6 +56,8 @@ async function storageSet(key, value) {
 function TopBar() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { questions, activeQuestionId, selectQuestion, addQuestion } = useContext(QuestionsContext);
+  const [showAdd, setShowAdd] = useState(false);
   const isMain = location.pathname === "/";
   const isThemes = location.pathname.startsWith("/themes");
   return (
@@ -120,6 +67,21 @@ function TopBar() {
         <span style={styles.topBarTitle}>World Café</span>
       </div>
       <div style={styles.topBarNav}>
+        <select
+          value={activeQuestionId || ""}
+          onChange={(e) => selectQuestion(e.target.value)}
+          style={styles.questionSelect}
+          title="Switch question"
+        >
+          {questions.map((q) => (
+            <option key={q.id} value={q.id}>
+              {q.label}
+            </option>
+          ))}
+        </select>
+        <button style={styles.iconBtnGhost} title="Add a new question" onClick={() => setShowAdd(true)}>
+          <Plus size={15} />
+        </button>
         <button
           onClick={() => navigate("/")}
           style={{ ...styles.navBtn, ...(isMain ? styles.navBtnActive : {}) }}
@@ -133,6 +95,16 @@ function TopBar() {
           Themes
         </button>
       </div>
+
+      {showAdd && (
+        <AddQuestionModal
+          onCancel={() => setShowAdd(false)}
+          onSave={(payload) => {
+            addQuestion(payload);
+            setShowAdd(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -211,6 +183,50 @@ function PromptModal({ mainQuestion, answers, initialExtra, onCancel, onSave }) 
           </button>
           <button style={styles.btnPrimary} onClick={() => onSave(draft.trim())}>
             Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddQuestionModal({ onCancel, onSave }) {
+  const [label, setLabel] = useState("");
+  const [mainQuestion, setMainQuestion] = useState("");
+  const canSave = label.trim() && mainQuestion.trim();
+  return (
+    <div style={styles.overlay} onClick={onCancel}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEyebrow}>New question</div>
+        <div style={styles.modalTitle}>Start a new round</div>
+
+        <div style={styles.promptLabel}>Dropdown label</div>
+        <input
+          autoFocus
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="e.g. Round 4 — Next steps"
+          style={styles.modalInput}
+        />
+
+        <div style={{ ...styles.promptLabel, marginTop: 16 }}>Main question</div>
+        <textarea
+          value={mainQuestion}
+          onChange={(e) => setMainQuestion(e.target.value)}
+          placeholder="What question is on the floor for this round?"
+          style={styles.modalTextarea}
+          rows={3}
+        />
+
+        <div style={styles.modalActions}>
+          <button style={styles.btnGhost} onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            style={styles.btnPrimary}
+            onClick={() => canSave && onSave({ label: label.trim(), mainQuestion: mainQuestion.trim() })}
+          >
+            Create question
           </button>
         </div>
       </div>
@@ -410,9 +426,9 @@ function ThemesPage({
   setThemesData,
   promptExtra,
   setPromptExtra,
-  autoTriggeredRef,
 }) {
   const navigate = useNavigate();
+  const { activeQuestionId, autoTriggeredRef } = useContext(QuestionsContext);
   const [status, setStatus] = useState("idle"); // idle | loading | error
   const [errMsg, setErrMsg] = useState("");
   const [newThemeDraft, setNewThemeDraft] = useState("");
@@ -456,7 +472,6 @@ function ThemesPage({
       }));
       const next = { generated: true, themes };
       setThemesData(next);
-      await storageSet("wc:themes", next);
       setStatus("idle");
     } catch (e) {
       console.error(e);
@@ -466,8 +481,12 @@ function ThemesPage({
   }, [allAnswers, meta.mainQuestion, promptExtra, setThemesData]);
 
   useEffect(() => {
-    if (!themesData.generated && !autoTriggeredRef.current && allAnswers.length > 0) {
-      autoTriggeredRef.current = true;
+    if (
+      !themesData.generated &&
+      !autoTriggeredRef.current.has(activeQuestionId) &&
+      allAnswers.length > 0
+    ) {
+      autoTriggeredRef.current.add(activeQuestionId);
       generate();
     }
     // eslint-disable-next-line
@@ -479,7 +498,7 @@ function ThemesPage({
   const assignedIds = new Set(themesData.themes.flatMap((t) => t.answerIds));
   const unassigned = allAnswers.filter((a) => !assignedIds.has(a.id));
 
-  const moveAnswer = async (answerId, fromThemeId, toThemeId) => {
+  const moveAnswer = (answerId, fromThemeId, toThemeId) => {
     if (fromThemeId === toThemeId) return;
     const next = {
       ...themesData,
@@ -494,19 +513,17 @@ function ThemesPage({
       }),
     };
     setThemesData(next);
-    await storageSet("wc:themes", next);
   };
 
-  const renameTheme = async (themeId, name) => {
+  const renameTheme = (themeId, name) => {
     const next = {
       ...themesData,
       themes: themesData.themes.map((t) => (t.id === themeId ? { ...t, name } : t)),
     };
     setThemesData(next);
-    await storageSet("wc:themes", next);
   };
 
-  const addTheme = async () => {
+  const addTheme = () => {
     const name = newThemeDraft.trim();
     if (!name) return;
     const next = {
@@ -515,16 +532,14 @@ function ThemesPage({
       themes: [...themesData.themes, { id: uid(), name, answerIds: [] }],
     };
     setThemesData(next);
-    await storageSet("wc:themes", next);
     setNewThemeDraft("");
     setAddingTheme(false);
   };
 
-  const clearThemes = async () => {
+  const clearThemes = () => {
     const next = { generated: false, themes: [] };
     setThemesData(next);
-    await storageSet("wc:themes", next);
-    autoTriggeredRef.current = false;
+    autoTriggeredRef.current.delete(activeQuestionId);
     setStatus("idle");
     setErrMsg("");
     setConfirmClear(false);
@@ -773,83 +788,97 @@ function ThemesPage({
 export default function App() {
   const navigate = useNavigate();
   const [loaded, setLoaded] = useState(false);
-  const [meta, setMetaState] = useState(DEFAULT_META);
-  const [tables, setTablesState] = useState([]);
-  const [themesData, setThemesDataState] = useState({ generated: false, themes: [] });
-  const [promptExtra, setPromptExtraState] = useState("");
-  const autoTriggeredRef = useRef(false);
+  const [questions, setQuestionsState] = useState([]);
+  const [activeQuestionId, setActiveQuestionIdState] = useState(null);
+  const autoTriggeredRef = useRef(new Set());
 
   useEffect(() => {
     (async () => {
-      const m = await storageGet("wc:meta");
-      if (m) {
-        setMetaState(m);
-      } else {
-        await storageSet("wc:meta", DEFAULT_META);
+      let qs = await storageGet("wc:questions");
+      if (!qs || !Array.isArray(qs) || qs.length === 0) {
+        qs = buildSeedQuestions();
+        await storageSet("wc:questions", qs);
       }
+      setQuestionsState(qs);
 
-      const t = await storageGet("wc:tables");
-      if (t && Array.isArray(t) && t.length) {
-        setTablesState(t);
-      } else {
-        const seed = seedTables();
-        setTablesState(seed);
-        await storageSet("wc:tables", seed);
-      }
-
-      const th = await storageGet("wc:themes");
-      if (th) {
-        autoTriggeredRef.current = !!th.generated;
-        setThemesDataState(th);
-      }
-
-      const pe = await storageGet("wc:promptExtra");
-      if (typeof pe === "string") {
-        setPromptExtraState(pe);
-      }
+      const savedActiveId = await storageGet("wc:activeQuestionId");
+      const activeId = qs.some((q) => q.id === savedActiveId) ? savedActiveId : qs[0].id;
+      setActiveQuestionIdState(activeId);
+      await storageSet("wc:activeQuestionId", activeId);
 
       setLoaded(true);
     })();
   }, []);
 
-  const setMeta = (next) => {
-    setMetaState(next);
-    storageSet("wc:meta", next);
+  const setQuestions = (next) => {
+    setQuestionsState(next);
+    storageSet("wc:questions", next);
   };
-  const setTables = (next) => {
-    setTablesState(next);
-    storageSet("wc:tables", next);
+  const setActiveQuestionId = (id) => {
+    setActiveQuestionIdState(id);
+    storageSet("wc:activeQuestionId", id);
+  };
+  const updateActiveQuestion = (updater) => {
+    setQuestions(questions.map((q) => (q.id === activeQuestionId ? updater(q) : q)));
+  };
+
+  const selectQuestion = (id) => {
+    setActiveQuestionId(id);
+    navigate("/");
+  };
+
+  const addQuestion = ({ label, mainQuestion }) => {
+    const newQuestion = {
+      id: uid(),
+      label,
+      mainQuestion,
+      tableQuestion: "What do you think?",
+      tables: [],
+      themesData: { generated: false, themes: [] },
+      promptExtra: "",
+    };
+    setQuestions([...questions, newQuestion]);
+    setActiveQuestionId(newQuestion.id);
+    navigate("/");
+  };
+
+  const setMeta = (nextMeta) => {
+    updateActiveQuestion((q) => ({
+      ...q,
+      mainQuestion: nextMeta.mainQuestion,
+      tableQuestion: nextMeta.tableQuestion,
+    }));
   };
   const setThemesData = (next) => {
-    setThemesDataState(next);
-    storageSet("wc:themes", next);
+    updateActiveQuestion((q) => ({ ...q, themesData: next }));
   };
   const setPromptExtra = (next) => {
-    setPromptExtraState(next);
-    storageSet("wc:promptExtra", next);
+    updateActiveQuestion((q) => ({ ...q, promptExtra: next }));
   };
 
   const handleAddTable = () => {
-    const nextTable = { id: uid(), name: `Table ${tables.length + 1}`, answers: [] };
-    const next = [...tables, nextTable];
-    setTables(next);
+    const activeQuestion = questions.find((q) => q.id === activeQuestionId);
+    const nextTable = { id: uid(), name: `Table ${activeQuestion.tables.length + 1}`, answers: [] };
+    updateActiveQuestion((q) => ({ ...q, tables: [...q.tables, nextTable] }));
     navigate(`/table/${nextTable.id}`);
   };
 
   const handleAddAnswer = (tableId, text) => {
-    const next = tables.map((t) =>
-      t.id === tableId ? { ...t, answers: [...t.answers, { id: uid(), text }] } : t
-    );
-    setTables(next);
+    updateActiveQuestion((q) => ({
+      ...q,
+      tables: q.tables.map((t) =>
+        t.id === tableId ? { ...t, answers: [...t.answers, { id: uid(), text }] } : t
+      ),
+    }));
   };
 
   const handleRemoveAnswer = (tableId, answerId) => {
-    const next = tables.map((t) =>
-      t.id === tableId
-        ? { ...t, answers: t.answers.filter((a) => a.id !== answerId) }
-        : t
-    );
-    setTables(next);
+    updateActiveQuestion((q) => ({
+      ...q,
+      tables: q.tables.map((t) =>
+        t.id === tableId ? { ...t, answers: t.answers.filter((a) => a.id !== answerId) } : t
+      ),
+    }));
   };
 
   if (!loaded) {
@@ -861,45 +890,54 @@ export default function App() {
     );
   }
 
+  const activeQuestion = questions.find((q) => q.id === activeQuestionId);
+  const meta = { mainQuestion: activeQuestion.mainQuestion, tableQuestion: activeQuestion.tableQuestion };
+
   return (
-    <div style={styles.appShell}>
-      <style>{FONTS}</style>
-      <Routes>
-        <Route
-          path="/"
-          element={
-            <MainBoard meta={meta} setMeta={setMeta} tables={tables} onAddTable={handleAddTable} />
-          }
-        />
-        <Route
-          path="/table/:tableId"
-          element={
-            <TablePage
-              tables={tables}
-              meta={meta}
-              setMeta={setMeta}
-              onAddAnswer={handleAddAnswer}
-              onRemoveAnswer={handleRemoveAnswer}
-            />
-          }
-        />
-        <Route
-          path="/themes"
-          element={
-            <ThemesPage
-              meta={meta}
-              tables={tables}
-              themesData={themesData}
-              setThemesData={setThemesData}
-              promptExtra={promptExtra}
-              setPromptExtra={setPromptExtra}
-              autoTriggeredRef={autoTriggeredRef}
-            />
-          }
-        />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </div>
+    <QuestionsContext.Provider value={{ questions, activeQuestionId, selectQuestion, addQuestion, autoTriggeredRef }}>
+      <div style={styles.appShell}>
+        <style>{FONTS}</style>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <MainBoard
+                meta={meta}
+                setMeta={setMeta}
+                tables={activeQuestion.tables}
+                onAddTable={handleAddTable}
+              />
+            }
+          />
+          <Route
+            path="/table/:tableId"
+            element={
+              <TablePage
+                tables={activeQuestion.tables}
+                meta={meta}
+                setMeta={setMeta}
+                onAddAnswer={handleAddAnswer}
+                onRemoveAnswer={handleRemoveAnswer}
+              />
+            }
+          />
+          <Route
+            path="/themes"
+            element={
+              <ThemesPage
+                meta={meta}
+                tables={activeQuestion.tables}
+                themesData={activeQuestion.themesData}
+                setThemesData={setThemesData}
+                promptExtra={activeQuestion.promptExtra}
+                setPromptExtra={setPromptExtra}
+              />
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+    </QuestionsContext.Provider>
   );
 }
 
@@ -932,7 +970,19 @@ const styles = {
     fontSize: 17,
     letterSpacing: "0.01em",
   },
-  topBarNav: { display: "flex", gap: 6 },
+  topBarNav: { display: "flex", gap: 6, alignItems: "center" },
+  questionSelect: {
+    background: "rgba(237,231,214,0.08)",
+    border: "1px solid rgba(237,231,214,0.18)",
+    color: CREAM_TEXT,
+    fontFamily: "'Inter', sans-serif",
+    fontSize: 12.5,
+    padding: "8px 10px",
+    borderRadius: 999,
+    cursor: "pointer",
+    maxWidth: 220,
+    marginRight: 4,
+  },
   navBtn: {
     background: "transparent",
     border: "1px solid rgba(237,231,214,0.18)",
