@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Routes, Route, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
-import { Plus, X, Pencil, ArrowLeft, Sparkles, GripVertical, RotateCcw, Check, Trash2 } from "lucide-react";
+import { Plus, X, Pencil, ArrowLeft, Sparkles, GripVertical, RotateCcw, Check, Trash2, MessageSquareText } from "lucide-react";
+import { buildThemePrompt } from "./promptTemplate.js";
 
 /* ---------------------------------------------------------------
    World Café — rapid sensemaking board for assemblies & world cafes
@@ -176,6 +177,40 @@ function EditModal({ title, value, onCancel, onSave, multiline }) {
             onClick={() => draft.trim() && onSave(draft.trim())}
           >
             Save question
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptModal({ mainQuestion, answers, initialExtra, onCancel, onSave }) {
+  const [draft, setDraft] = useState(initialExtra || "");
+  const preview = buildThemePrompt({ mainQuestion, answers, extraInstructions: draft });
+  return (
+    <div style={styles.overlay} onClick={onCancel}>
+      <div style={styles.promptModal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEyebrow}>Theme generation</div>
+        <div style={styles.modalTitle}>View / edit prompt</div>
+
+        <div style={styles.promptLabel}>Full prompt sent to Claude</div>
+        <pre style={styles.promptPre}>{preview}</pre>
+
+        <div style={styles.promptLabel}>Additional instructions (optional)</div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="e.g. Keep theme names under 4 words, or group by policy area"
+          style={styles.modalTextarea}
+          rows={3}
+        />
+
+        <div style={styles.modalActions}>
+          <button style={styles.btnGhost} onClick={onCancel}>
+            Cancel
+          </button>
+          <button style={styles.btnPrimary} onClick={() => onSave(draft.trim())}>
+            Save
           </button>
         </div>
       </div>
@@ -373,6 +408,8 @@ function ThemesPage({
   tables,
   themesData,
   setThemesData,
+  promptExtra,
+  setPromptExtra,
   autoTriggeredRef,
 }) {
   const navigate = useNavigate();
@@ -383,6 +420,7 @@ function ThemesPage({
   const [dragOverTheme, setDragOverTheme] = useState(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [editingThemeId, setEditingThemeId] = useState(null);
+  const [showPromptModal, setShowPromptModal] = useState(false);
 
   const allAnswers = tables.flatMap((t) =>
     t.answers.map((a) => ({ id: a.id, text: a.text, table: t.name }))
@@ -403,6 +441,7 @@ function ThemesPage({
         body: JSON.stringify({
           mainQuestion: meta.mainQuestion,
           answers: allAnswers.map(({ id, text }) => ({ id, text })),
+          extraInstructions: promptExtra,
         }),
       });
       if (!response.ok) {
@@ -424,7 +463,7 @@ function ThemesPage({
       setErrMsg("Something went wrong while generating themes. Please try again.");
       setStatus("error");
     }
-  }, [allAnswers, meta.mainQuestion, setThemesData]);
+  }, [allAnswers, meta.mainQuestion, promptExtra, setThemesData]);
 
   useEffect(() => {
     if (!themesData.generated && !autoTriggeredRef.current && allAnswers.length > 0) {
@@ -541,6 +580,10 @@ function ThemesPage({
             <button style={styles.btnGhostDark} onClick={generate}>
               <RotateCcw size={13} style={{ marginRight: 6 }} />
               {themesData.generated ? "Regenerate" : "Generate with AI"}
+            </button>
+            <button style={styles.btnGhostDark} onClick={() => setShowPromptModal(true)}>
+              <MessageSquareText size={13} style={{ marginRight: 6 }} />
+              View/Edit Prompt
             </button>
             {themesData.themes.length > 0 && (!confirmClear ? (
               <button style={styles.btnGhostDark} onClick={() => setConfirmClear(true)}>
@@ -708,6 +751,19 @@ function ThemesPage({
           }}
         />
       )}
+
+      {showPromptModal && (
+        <PromptModal
+          mainQuestion={meta.mainQuestion}
+          answers={allAnswers.map(({ id, text }) => ({ id, text }))}
+          initialExtra={promptExtra}
+          onCancel={() => setShowPromptModal(false)}
+          onSave={(v) => {
+            setPromptExtra(v);
+            setShowPromptModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -720,6 +776,7 @@ export default function App() {
   const [meta, setMetaState] = useState(DEFAULT_META);
   const [tables, setTablesState] = useState([]);
   const [themesData, setThemesDataState] = useState({ generated: false, themes: [] });
+  const [promptExtra, setPromptExtraState] = useState("");
   const autoTriggeredRef = useRef(false);
 
   useEffect(() => {
@@ -746,6 +803,11 @@ export default function App() {
         setThemesDataState(th);
       }
 
+      const pe = await storageGet("wc:promptExtra");
+      if (typeof pe === "string") {
+        setPromptExtraState(pe);
+      }
+
       setLoaded(true);
     })();
   }, []);
@@ -761,6 +823,10 @@ export default function App() {
   const setThemesData = (next) => {
     setThemesDataState(next);
     storageSet("wc:themes", next);
+  };
+  const setPromptExtra = (next) => {
+    setPromptExtraState(next);
+    storageSet("wc:promptExtra", next);
   };
 
   const handleAddTable = () => {
@@ -825,6 +891,8 @@ export default function App() {
               tables={tables}
               themesData={themesData}
               setThemesData={setThemesData}
+              promptExtra={promptExtra}
+              setPromptExtra={setPromptExtra}
               autoTriggeredRef={autoTriggeredRef}
             />
           }
@@ -1367,6 +1435,41 @@ const styles = {
     width: "100%",
     maxWidth: 480,
     boxShadow: "0 30px 60px rgba(0,0,0,0.4)",
+  },
+  promptModal: {
+    background: PAPER,
+    borderRadius: 18,
+    padding: 28,
+    width: "100%",
+    maxWidth: 640,
+    maxHeight: "85vh",
+    overflowY: "auto",
+    boxShadow: "0 30px 60px rgba(0,0,0,0.4)",
+    boxSizing: "border-box",
+  },
+  promptLabel: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11,
+    letterSpacing: "0.08em",
+    color: TEXT_MUTE,
+    marginBottom: 8,
+    marginTop: 18,
+  },
+  promptPre: {
+    background: PAPER_DIM,
+    border: `1px solid ${PAPER_DIM}`,
+    borderRadius: 10,
+    padding: "14px 16px",
+    margin: 0,
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 12,
+    lineHeight: 1.55,
+    color: TEXT_DARK,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    maxHeight: 260,
+    overflowY: "auto",
+    boxSizing: "border-box",
   },
   modalEyebrow: {
     fontFamily: "'IBM Plex Mono', monospace",
