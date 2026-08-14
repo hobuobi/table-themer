@@ -30,7 +30,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
-        max_tokens: Math.min(8192, Math.max(1024, answers.length * 30)),
+        max_tokens: Math.min(16000, Math.max(1024, answers.length * 60)),
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -44,7 +44,10 @@ export default async function handler(req, res) {
 
     const data = await anthropicRes.json();
     if (data.stop_reason === "max_tokens") {
-      console.error("generate-themes: response truncated at max_tokens", { answerCount: answers.length });
+      console.error("generate-themes: response truncated at max_tokens", {
+        answerCount: answers.length,
+        usage: data.usage,
+      });
       res.status(502).json({ error: "The model's response was too long and got cut off. Try again." });
       return;
     }
