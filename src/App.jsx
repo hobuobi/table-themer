@@ -382,6 +382,7 @@ function ThemesPage({
   const [addingTheme, setAddingTheme] = useState(false);
   const [dragOverTheme, setDragOverTheme] = useState(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [editingThemeId, setEditingThemeId] = useState(null);
 
   const allAnswers = tables.flatMap((t) =>
     t.answers.map((a) => ({ id: a.id, text: a.text, table: t.name }))
@@ -457,6 +458,15 @@ function ThemesPage({
     await storageSet("wc:themes", next);
   };
 
+  const renameTheme = async (themeId, name) => {
+    const next = {
+      ...themesData,
+      themes: themesData.themes.map((t) => (t.id === themeId ? { ...t, name } : t)),
+    };
+    setThemesData(next);
+    await storageSet("wc:themes", next);
+  };
+
   const addTheme = async () => {
     const name = newThemeDraft.trim();
     if (!name) return;
@@ -525,14 +535,14 @@ function ThemesPage({
         </div>
       )}
 
-      {status !== "loading" && themesData.generated && (
+      {status !== "loading" && allAnswers.length > 0 && (
         <>
           <div style={styles.themesToolbar}>
             <button style={styles.btnGhostDark} onClick={generate}>
               <RotateCcw size={13} style={{ marginRight: 6 }} />
-              Regenerate
+              {themesData.generated ? "Regenerate" : "Generate with AI"}
             </button>
-            {!confirmClear ? (
+            {themesData.themes.length > 0 && (!confirmClear ? (
               <button style={styles.btnGhostDark} onClick={() => setConfirmClear(true)}>
                 <Trash2 size={13} style={{ marginRight: 6 }} />
                 Clear
@@ -547,7 +557,7 @@ function ThemesPage({
                   <X size={15} />
                 </button>
               </div>
-            )}
+            ))}
             {!addingTheme ? (
               <button style={styles.btnGoldSmall} onClick={() => setAddingTheme(true)}>
                 <Plus size={14} style={{ marginRight: 6 }} />
@@ -601,7 +611,16 @@ function ThemesPage({
                 onDrop={(e) => onDropTo(e, theme.id)}
               >
                 <div style={styles.themeColumnHead}>
-                  <div style={styles.themeName}>{theme.name}</div>
+                  <div style={styles.themeNameRow}>
+                    <div style={styles.themeName}>{theme.name}</div>
+                    <button
+                      style={styles.themeEditBtn}
+                      title="Rename theme"
+                      onClick={() => setEditingThemeId(theme.id)}
+                    >
+                      <Pencil size={11} />
+                    </button>
+                  </div>
                   <div style={styles.themeCount}>{theme.answerIds.length}</div>
                 </div>
                 <div style={styles.themeCards}>
@@ -672,10 +691,22 @@ function ThemesPage({
         </>
       )}
 
-      {status === "idle" && !themesData.generated && allAnswers.length === 0 && (
+      {status === "idle" && allAnswers.length === 0 && (
         <div style={styles.errorCard}>
           <div style={styles.errorText}>Add a few ideas at the tables first, then come back here.</div>
         </div>
+      )}
+
+      {editingThemeId && (
+        <EditModal
+          title="Theme name"
+          value={themesData.themes.find((t) => t.id === editingThemeId)?.name || ""}
+          onCancel={() => setEditingThemeId(null)}
+          onSave={(v) => {
+            renameTheme(editingThemeId, v);
+            setEditingThemeId(null);
+          }}
+        />
       )}
     </div>
   );
@@ -1236,9 +1267,9 @@ const styles = {
   },
   themeColumns: {
     display: "flex",
+    flexWrap: "wrap",
     gap: 18,
     padding: "20px 40px 40px",
-    overflowX: "auto",
   },
   themeColumn: {
     background: "rgba(237,231,214,0.05)",
@@ -1264,11 +1295,27 @@ const styles = {
     paddingBottom: 10,
     borderBottom: "1px solid rgba(237,231,214,0.12)",
   },
+  themeNameRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
+  },
   themeName: {
     fontFamily: "'Fraunces', serif",
     fontWeight: 600,
     fontSize: 15.5,
     lineHeight: 1.25,
+  },
+  themeEditBtn: {
+    background: "transparent",
+    border: "none",
+    color: "rgba(237,231,214,0.45)",
+    padding: 2,
+    display: "flex",
+    alignItems: "center",
+    flexShrink: 0,
+    cursor: "pointer",
   },
   themeCount: {
     fontFamily: "'IBM Plex Mono', monospace",
