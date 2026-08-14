@@ -30,18 +30,25 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
-        max_tokens: 1000,
+        max_tokens: Math.min(8192, Math.max(1024, answers.length * 30)),
         messages: [{ role: "user", content: prompt }],
       }),
     });
 
     if (!anthropicRes.ok) {
       const errText = await anthropicRes.text();
+      console.error("Anthropic API error", anthropicRes.status, errText);
       res.status(502).json({ error: `Anthropic API error: ${errText}` });
       return;
     }
 
     const data = await anthropicRes.json();
+    if (data.stop_reason === "max_tokens") {
+      console.error("generate-themes: response truncated at max_tokens", { answerCount: answers.length });
+      res.status(502).json({ error: "The model's response was too long and got cut off. Try again." });
+      return;
+    }
+
     const textBlocks = (data.content || [])
       .filter((b) => b.type === "text")
       .map((b) => b.text)
@@ -51,6 +58,7 @@ export default async function handler(req, res) {
 
     res.status(200).json(parsed);
   } catch (e) {
+    console.error("generate-themes failed", e);
     res.status(500).json({ error: "Failed to generate themes" });
   }
 }
