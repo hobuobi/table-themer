@@ -342,14 +342,14 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) 
                 {simActive && gRevealed.length === 0 && (
                   <div style={s.simTableEmpty}>No comments yet</div>
                 )}
+                {shown.map((c) => (
+                  <CommentItem key={c.id} c={c} onUseComment={onUseComment} />
+                ))}
                 {hidden > 0 && (
                   <button style={s.moreRow} onClick={() => setExpandedNum(g.num)}>
                     Show {hidden} more
                   </button>
                 )}
-                {shown.map((c) => (
-                  <CommentItem key={c.id} c={c} onUseComment={onUseComment} />
-                ))}
               </div>
             );
           })}
