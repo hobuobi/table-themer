@@ -889,13 +889,15 @@ export default function App() {
     setGenStatus("loading");
     setGenError("");
     try {
+      // Send short positional ids (comment index) so the model echoes back
+      // compact id lists — long stable ids blow past max_tokens on big sets.
       const res = await fetch("/api/generate-themes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mainQuestion: active.mainQuestion,
-          comments: comments.map((c) => ({ id: c.id, table: c.tableName, text: c.text })),
-          existingThemes: themes.map((t) => ({ id: t.id, text: t.text })),
+          comments: comments.map((c, i) => ({ id: String(i), table: c.tableName, text: c.text })),
+          existingThemes: themes.map((t, i) => ({ id: String(i), text: t.text })),
           previousCandidates: candidates.map((c) => ({ text: c.text })),
         }),
       });
@@ -904,15 +906,21 @@ export default function App() {
         throw new Error(body.error || "Request failed");
       }
       const data = await res.json();
-      const validCommentId = (id) => commentById.has(id);
+      const commentAt = (i) => comments[Number(i)]?.id;
+      const themeAt = (i) => themes[Number(i)]?.id;
       const next = (data.themes || [])
-        .map((t) => ({
-          id: uid(),
-          text: (t.text || "").slice(0, MAX_THEME_LEN),
-          informingCommentIds: (t.informingCommentIds || []).filter(validCommentId),
-          representativeCommentIds: (t.representativeCommentIds || []).filter(validCommentId),
-          similarThemeIds: (t.similarThemeIds || []).filter((id) => themes.some((x) => x.id === id)),
-        }))
+        .map((t) => {
+          const reps = (t.representativeCommentIds || []).map(commentAt).filter(Boolean);
+          return {
+            id: uid(),
+            text: (t.text || "").slice(0, MAX_THEME_LEN),
+            // The model only returns representatives; treat them as the
+            // theme's comments everywhere downstream (report, present).
+            informingCommentIds: reps,
+            representativeCommentIds: reps,
+            similarThemeIds: (t.similarThemeIds || []).map(themeAt).filter(Boolean),
+          };
+        })
         .filter((t) => t.text);
       setCandidates(() => next);
       setGenStatus("idle");

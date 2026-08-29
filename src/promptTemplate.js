@@ -1,7 +1,9 @@
 /* Prompt for turning a question's comments into candidate themes.
-   Candidates are richer than plain themes: each carries the comments that
-   inform it, the most representative ones, and any existing recorded
-   themes it overlaps with. */
+   Candidates carry only what the UI needs — the theme text, a few
+   representative comments, and any existing themes they overlap with.
+   We deliberately do NOT ask the model to echo every supporting
+   comment id: that output grows with the dataset and blows the token
+   budget on large questions. */
 export function buildThemePrompt({
   mainQuestion,
   comments,
@@ -38,19 +40,18 @@ export function buildThemePrompt({
   }
 
   parts.push(
-    `Produce a set of candidate themes. Requirements:\n` +
+    `Produce 4 to 9 candidate themes. Requirements:\n` +
       `- Each theme captures exactly ONE idea in response to the main question.\n` +
       `- Themes must be mutually exclusive — no overlap — and together cover the main currents.\n` +
       `- Only propose a theme whose underlying idea appears multiple times, within a table and/or across tables.\n` +
       `- "text": plain, concrete language, no jargon, 100 characters maximum.\n` +
-      `- "informingCommentIds": every comment id that supports the theme.\n` +
-      `- "representativeCommentIds": 1-3 comment ids that best exemplify it (a subset of informingCommentIds).\n` +
+      `- "representativeCommentIds": 2 to 4 comment ids whose text best exemplifies the theme.\n` +
       `- "similarThemeIds": ids of any already-recorded themes this candidate overlaps with (empty array if none).`
   );
 
   parts.push(
-    `Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:\n` +
-      `{"themes":[{"text":"...","informingCommentIds":["id1"],"representativeCommentIds":["id1"],"similarThemeIds":[]}]}`
+    `Return ONLY valid JSON, no markdown fences, no commentary, no extra keys, in exactly this shape:\n` +
+      `{"themes":[{"text":"...","representativeCommentIds":["id1","id2"],"similarThemeIds":[]}]}`
   );
 
   return parts.join("\n\n");
