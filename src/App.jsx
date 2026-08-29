@@ -62,6 +62,9 @@ input, textarea { font: inherit; }
 .tt-hover { opacity: 0 !important; pointer-events: none; }
 .tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
 .tt-comment:hover { background: ${C.lineSoft}; }
+.tt-theme-text:hover { color: ${C.blue} !important; }
+.tt-theme-x:hover { background: ${C.redX} !important; color: #fff !important; }
+.tt-present-row:hover .tt-present-text { color: ${C.blue}; }
 `;
 
 const MAX_THEME_LEN = 100;
@@ -499,17 +502,17 @@ function ThemeRow({ theme, onChange, onDelete }) {
           style={s.themeEditInput}
         />
       ) : (
-        <button style={s.themeText} onClick={startEdit} title="Click to edit">
+        <button className="tt-theme-text" style={s.themeText} onClick={startEdit} title="Click to edit">
           {theme.text}
         </button>
       )}
       <button
-        className="tt-hover"
+        className="tt-hover tt-theme-x"
         style={{ ...s.themeDelete, opacity: 0 }}
         onClick={onDelete}
         title="Delete theme"
       >
-        <X size={13} color={C.redX} strokeWidth={2.6} />
+        <X size={13} strokeWidth={2.6} />
       </button>
     </div>
   );
@@ -658,14 +661,16 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
 
 /* ---------------- present view ---------------- */
 
-function RotatingLine({ items, style }) {
+function RotatingLine({ items, style, paused }) {
   const [i, setI] = useState(0);
   useEffect(() => {
     setI(0);
-    if (items.length < 2) return;
+  }, [items.join("|")]);
+  useEffect(() => {
+    if (paused || items.length < 2) return;
     const id = setInterval(() => setI((n) => (n + 1) % items.length), 4200);
     return () => clearInterval(id);
-  }, [items.length, items.join("|")]);
+  }, [items.length, items.join("|"), paused]);
   const idx = i % items.length;
   return (
     <div key={idx} style={{ ...style, animation: "ttFadeUp 0.4s ease" }}>
@@ -675,6 +680,7 @@ function RotatingLine({ items, style }) {
 }
 
 function PresentView({ question, themes, repCommentsForTheme, onBack }) {
+  const [hoverId, setHoverId] = useState(null);
   return (
     <div style={s.presentWrap}>
       <div style={s.presentInner}>
@@ -691,11 +697,21 @@ function PresentView({ question, themes, repCommentsForTheme, onBack }) {
           {themes.map((t, i) => {
             const reps = repCommentsForTheme(t).map((c) => c.text);
             return (
-              <div key={t.id} style={s.presentRow}>
+              <div
+                key={t.id}
+                className="tt-present-row"
+                style={s.presentRow}
+                onMouseEnter={() => setHoverId(t.id)}
+                onMouseLeave={() => setHoverId(null)}
+              >
                 <span style={s.presentNum}>{i + 1}</span>
-                <div style={{ minWidth: 0 }}>
-                  <div style={s.presentThemeText}>{t.text}</div>
-                  {reps.length > 0 && <RotatingLine items={reps} style={s.presentQuote} />}
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="tt-present-text" style={s.presentThemeText}>
+                    {t.text}
+                  </div>
+                  {reps.length > 0 && (
+                    <RotatingLine items={reps} style={s.presentQuote} paused={hoverId === t.id} />
+                  )}
                 </div>
               </div>
             );
@@ -1433,6 +1449,7 @@ const s = {
     color: C.ink,
     letterSpacing: "-0.01em",
     lineHeight: 1.3,
+    transition: "color 0.12s",
   },
   themeEditInput: {
     flex: 1,
@@ -1453,10 +1470,11 @@ const s = {
     height: 26,
     borderRadius: "50%",
     background: C.redSoft,
+    color: C.redX,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    transition: "opacity 0.12s",
+    transition: "opacity 0.12s, background 0.12s, color 0.12s",
   },
 
   /* share menu */
@@ -1658,14 +1676,19 @@ const s = {
     flexShrink: 0,
     marginTop: 8,
   },
-  presentThemeText: { fontSize: 40, fontWeight: 500, letterSpacing: "-0.02em", lineHeight: 1.15 },
+  presentThemeText: {
+    fontSize: 40,
+    fontWeight: 500,
+    letterSpacing: "-0.02em",
+    lineHeight: 1.15,
+    transition: "color 0.12s",
+  },
   presentQuote: {
     marginTop: 12,
     fontSize: 17,
     fontStyle: "italic",
     color: C.mute,
     lineHeight: 1.45,
-    maxWidth: "52ch",
   },
 
   /* toast */
