@@ -58,6 +58,7 @@ input, textarea { font: inherit; }
   9% { background-color: #D6DBF1; }
   100% { background-color: #FFFFFF; }
 }
+@keyframes ttFadeUp { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 .tt-hover { opacity: 0 !important; pointer-events: none; }
 .tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
 .tt-comment:hover { background: ${C.lineSoft}; }
@@ -657,7 +658,23 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
 
 /* ---------------- present view ---------------- */
 
-function PresentView({ question, themes, commentsForTheme, onBack }) {
+function RotatingLine({ items, style }) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    setI(0);
+    if (items.length < 2) return;
+    const id = setInterval(() => setI((n) => (n + 1) % items.length), 4200);
+    return () => clearInterval(id);
+  }, [items.length, items.join("|")]);
+  const idx = i % items.length;
+  return (
+    <div key={idx} style={{ ...style, animation: "ttFadeUp 0.4s ease" }}>
+      “{items[idx]}”
+    </div>
+  );
+}
+
+function PresentView({ question, themes, repCommentsForTheme, onBack }) {
   return (
     <div style={s.presentWrap}>
       <div style={s.presentInner}>
@@ -666,21 +683,23 @@ function PresentView({ question, themes, commentsForTheme, onBack }) {
           BACK
         </button>
         <h1 style={s.presentTitle}>{question.mainQuestion}</h1>
+        <div style={s.presentCount}>
+          {themes.length} {themes.length === 1 ? "theme" : "themes"}
+        </div>
         <div style={s.presentList}>
           {themes.length === 0 && <div style={s.presentEmpty}>No themes yet.</div>}
-          {themes.map((t) => (
-            <div key={t.id} style={s.presentRow}>
-              <SourceBadge source={t.source} size={28} />
-              <div>
-                <div style={s.presentThemeText}>{t.text}</div>
-                <div style={s.presentSub}>
-                  <CornerDownRight size={13} color={C.faint} />
-                  {SOURCE_LABEL[t.source]}
-                  {commentsForTheme(t).length > 0 && ` · ${commentsForTheme(t).length} comments`}
+          {themes.map((t, i) => {
+            const reps = repCommentsForTheme(t).map((c) => c.text);
+            return (
+              <div key={t.id} style={s.presentRow}>
+                <span style={s.presentNum}>{i + 1}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={s.presentThemeText}>{t.text}</div>
+                  {reps.length > 0 && <RotatingLine items={reps} style={s.presentQuote} />}
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -825,6 +844,12 @@ export default function App() {
       }
       return [];
     },
+    [commentById]
+  );
+
+  const repCommentsForTheme = useCallback(
+    (theme) =>
+      (theme.representativeCommentIds || []).map((id) => commentById.get(id)).filter(Boolean),
     [commentById]
   );
 
@@ -996,7 +1021,7 @@ export default function App() {
         <PresentView
           question={active}
           themes={themes}
-          commentsForTheme={commentsForTheme}
+          repCommentsForTheme={repCommentsForTheme}
           onBack={() => setView("work")}
         />
       </>
@@ -1582,7 +1607,7 @@ const s = {
     display: "flex",
     justifyContent: "center",
   },
-  presentInner: { width: "100%", maxWidth: 900, padding: "52px 48px 100px" },
+  presentInner: { width: "80%", maxWidth: 1200, padding: "52px 0 100px" },
   backBtn: {
     display: "inline-flex",
     alignItems: "center",
@@ -1593,27 +1618,46 @@ const s = {
     letterSpacing: "0.08em",
     marginBottom: 22,
   },
-  presentTitle: { margin: "0 0 8px", fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.1 },
-  presentList: { marginTop: 26, borderTop: `1px solid ${C.line}` },
+  presentTitle: { margin: 0, fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.1 },
+  presentCount: {
+    marginTop: 10,
+    fontSize: 12.5,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: C.faint,
+  },
+  presentList: { marginTop: 28, borderTop: `1px solid ${C.line}` },
   presentEmpty: { padding: "40px 0", color: C.faint },
   presentRow: {
     display: "flex",
     alignItems: "flex-start",
-    gap: 16,
-    padding: "22px 0",
+    gap: 20,
+    padding: "26px 0",
     borderBottom: `1px solid ${C.line}`,
   },
-  presentThemeText: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.25 },
-  presentSub: {
-    display: "flex",
+  presentNum: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    background: C.lineSoft,
+    color: C.mute,
+    display: "inline-flex",
     alignItems: "center",
-    gap: 6,
-    marginTop: 6,
-    fontSize: 12.5,
-    fontWeight: 700,
-    letterSpacing: "0.03em",
-    color: C.faint,
-    textTransform: "uppercase",
+    justifyContent: "center",
+    fontSize: 16,
+    fontWeight: 800,
+    flexShrink: 0,
+    marginTop: 8,
+  },
+  presentThemeText: { fontSize: 40, fontWeight: 500, letterSpacing: "-0.02em", lineHeight: 1.15 },
+  presentQuote: {
+    marginTop: 12,
+    fontSize: 17,
+    fontStyle: "italic",
+    color: C.mute,
+    lineHeight: 1.45,
+    maxWidth: "52ch",
   },
 
   /* toast */
