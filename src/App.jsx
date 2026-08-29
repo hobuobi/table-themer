@@ -1,1565 +1,1709 @@
-import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
-import { Routes, Route, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
-import { Plus, X, Pencil, ArrowLeft, Sparkles, GripVertical, RotateCcw, Check, Trash2, MessageSquareText } from "lucide-react";
-import { buildThemePrompt } from "./promptTemplate.js";
-import { buildSeedQuestions } from "./seedQuestions.js";
+import React, { useState, useEffect, useRef, useMemo, useCallback, useReducer } from "react";
+import {
+  Sparkles,
+  ArrowRight,
+  ArrowLeft,
+  X,
+  Check,
+  RotateCw,
+  ChevronDown,
+  Share2,
+  Presentation,
+  FileText,
+  Braces,
+  CornerDownRight,
+  Play,
+  Pause,
+  Square,
+} from "lucide-react";
+import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
 
 /* ---------------------------------------------------------------
-   World Café — rapid sensemaking board for assemblies & world cafes
-   Visual language: table-tent place cards on a deep "meeting room"
-   ground. Mono numerals label sequence (tables are literally
-   numbered), a warm paper card is the unit everything is built from.
+   Table Themer — build a themed synthesis of one question's
+   comments. Comments arrive per table (websocket / simulator later);
+   themes are written by hand, promoted from a comment, or generated.
 ------------------------------------------------------------------*/
 
-const FONTS = `
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+const C = {
+  ink: "#15171A",
+  body: "#33383F",
+  mute: "#8A8F98",
+  faint: "#AEB2BA",
+  line: "#ECECEE",
+  lineSoft: "#F3F3F4",
+  bg: "#FFFFFF",
+  blue: "#3B4DA6",
+  blueSoft: "#E9ECF9",
+  green: "#2F8A4E",
+  greenSoft: "#E5F1E9",
+  greenMid: "#3E9E5E",
+  orange: "#E0892E",
+  orangeSoft: "#FBEEDD",
+  redX: "#E5484D",
+  redSoft: "#FCECEC",
+};
+
+const GLOBAL_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin: 0; background: ${C.bg}; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
+input, textarea { font: inherit; }
+::selection { background: ${C.blueSoft}; }
 @keyframes spin { to { transform: rotate(360deg); } }
-button { font-family: 'Inter', sans-serif; }
-button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid #C8952E; outline-offset: 2px; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-.wc-tile:hover { transform: translateY(-3px); }
+@keyframes ttFlash {
+  0% { background-color: #FFFFFF; }
+  9% { background-color: #D6DBF1; }
+  100% { background-color: #FFFFFF; }
+}
+@keyframes ttFadeUp { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.tt-hover { opacity: 0 !important; pointer-events: none; }
+.tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
+.tt-comment:hover { background: ${C.lineSoft}; }
+.tt-theme-text:hover { color: ${C.blue} !important; }
+.tt-theme-x:hover { background: ${C.redX} !important; color: #fff !important; }
+.tt-present-row:hover .tt-present-text { color: ${C.blue}; }
 `;
 
-const INK = "#1E241F";
-const INK_2 = "#262F27";
-const PAPER = "#F4EFE2";
-const PAPER_DIM = "#E7E0CC";
-const BLUE = "#AFD3E0";
-const BLUE_DEEP = "#5C8A9C";
-const GOLD = "#C8952E";
-const RUST = "#B5563A";
-const TEXT_DARK = "#241F16";
-const TEXT_MUTE = "#948C77";
-const CREAM_TEXT = "#EDE7D6";
+const MAX_THEME_LEN = 100;
+const STORAGE_KEY = "tt:v2";
 
-const QuestionsContext = createContext(null);
+/* ---------------- persistence ---------------- */
 
-async function storageGet(key) {
+function loadState() {
+  const seed = buildSeedState();
+
+  let parsed = null;
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : null;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) parsed = JSON.parse(raw);
   } catch (e) {
-    return null;
+    /* fall through to seed */
+  }
+
+  if (!parsed) {
+    const themes = {};
+    const candidates = {};
+    seed.questions.forEach((q) => {
+      themes[q.id] = [];
+      candidates[q.id] = [];
+    });
+    return {
+      questions: seed.questions,
+      activeId: seed.questions[0].id,
+      comments: seed.comments,
+      themes,
+      candidates,
+    };
+  }
+
+  // Backfill simOffset onto comments persisted before the simulator existed.
+  const offsetById = new Map();
+  Object.values(seed.comments)
+    .flat()
+    .forEach((c) => offsetById.set(c.id, c.simOffset));
+  Object.keys(parsed.comments || {}).forEach((qid) => {
+    parsed.comments[qid] = parsed.comments[qid].map((c) => ({
+      ...c,
+      simOffset: c.simOffset ?? offsetById.get(c.id) ?? 0,
+    }));
+  });
+  return parsed;
+}
+
+function saveState(state) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error("Table Themer: could not persist state", e);
   }
 }
-async function storageSet(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) {
-    console.error("storage set failed", key, e);
-  }
+
+/* ---------------- helpers ---------------- */
+
+function makeTheme({
+  text,
+  source,
+  sourceCommentId = null,
+  informingCommentIds = [],
+  representativeCommentIds = [],
+  similarThemeIds = [],
+}) {
+  return {
+    id: uid(),
+    text: text.slice(0, MAX_THEME_LEN),
+    source, // "AI" | "MANUAL" | "COMMENT"
+    sourceCommentId,
+    informingCommentIds,
+    representativeCommentIds,
+    similarThemeIds,
+    createdAt: Date.now(),
+  };
 }
 
-/* ---------------- shared UI atoms ---------------- */
+function download(name, text, type = "text/plain") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
-function TopBar() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { questions, activeQuestionId, selectQuestion, addQuestion } = useContext(QuestionsContext);
-  const [showAdd, setShowAdd] = useState(false);
-  const isMain = location.pathname === "/";
-  const isThemes = location.pathname.startsWith("/themes");
+const SOURCE_LABEL = { AI: "AI", MANUAL: "Manual", COMMENT: "Comment" };
+
+/* ---------------- atoms ---------------- */
+
+function SourceBadge({ source, size = 26 }) {
+  const spec =
+    source === "AI"
+      ? { bg: C.green, node: <Sparkles size={Math.round(size * 0.52)} color="#fff" strokeWidth={2.4} /> }
+      : source === "COMMENT"
+      ? { bg: C.blue, node: "T" }
+      : { bg: C.orange, node: "M" };
   return (
-    <div style={styles.topBar}>
-      <div style={styles.topBarBrand}>
-        <span style={styles.topBarMark}>◆</span>
-        <span style={styles.topBarTitle}>World Café</span>
-      </div>
-      <div style={styles.topBarNav}>
-        <select
-          value={activeQuestionId || ""}
-          onChange={(e) => selectQuestion(e.target.value)}
-          style={styles.questionSelect}
-          title="Switch question"
-        >
-          {questions.map((q) => (
-            <option key={q.id} value={q.id}>
-              {q.label}
-            </option>
-          ))}
-        </select>
-        <button style={styles.iconBtnGhost} title="Add a new question" onClick={() => setShowAdd(true)}>
-          <Plus size={15} />
-        </button>
-        <button
-          onClick={() => navigate("/")}
-          style={{ ...styles.navBtn, ...(isMain ? styles.navBtnActive : {}) }}
-        >
-          Board
-        </button>
-        <button
-          onClick={() => navigate("/themes")}
-          style={{ ...styles.navBtn, ...(isThemes ? styles.navBtnActive : {}) }}
-        >
-          Themes
-        </button>
-      </div>
-
-      {showAdd && (
-        <AddQuestionModal
-          onCancel={() => setShowAdd(false)}
-          onSave={(payload) => {
-            addQuestion(payload);
-            setShowAdd(false);
-          }}
-        />
-      )}
-    </div>
+    <span
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 6,
+        background: spec.bg,
+        color: "#fff",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: Math.round(size * 0.46),
+        fontWeight: 800,
+        flexShrink: 0,
+      }}
+    >
+      {spec.node}
+    </span>
   );
 }
 
-function EditModal({ title, value, onCancel, onSave, multiline }) {
-  const [draft, setDraft] = useState(value);
-  const ref = useRef(null);
+function Spinner({ size = 18 }) {
+  return (
+    <span
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        border: `2.5px solid ${C.line}`,
+        borderTopColor: C.blue,
+        display: "inline-block",
+        animation: "spin 0.8s linear infinite",
+      }}
+    />
+  );
+}
+
+/* ---------------- comments panel ---------------- */
+
+const COLLAPSED_COUNT = 2;
+
+function fmtClock(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function CommentItem({ c, onUseComment }) {
+  return (
+    <button
+      className="tt-comment tt-row"
+      style={s.commentRow}
+      onClick={() => onUseComment(c)}
+      title="Add as a theme"
+    >
+      <span style={s.commentBadge}>T{c.tableNum}</span>
+      <span style={s.commentText}>{c.text}</span>
+      <ArrowRight
+        className="tt-hover"
+        size={15}
+        color={C.faint}
+        style={{ ...s.commentArrow, opacity: 0 }}
+      />
+    </button>
+  );
+}
+
+function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) {
+  const simActive = !!sim;
+  const done = simActive && sim.elapsed >= sim.duration;
+  const revealed = simActive
+    ? comments.filter((c) => (c.simOffset ?? 0) <= sim.elapsed)
+    : comments;
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    comments.forEach((c) => {
+      if (!map.has(c.tableId)) map.set(c.tableId, { name: c.tableName, num: c.tableNum, items: [] });
+      map.get(c.tableId).items.push(c);
+    });
+    return [...map.values()].sort((a, b) => a.num - b.num);
+  }, [comments]);
+
+  // Newest first — a live feed reads top-down.
+  const chrono = useMemo(
+    () => [...revealed].sort((a, b) => (b.simOffset ?? 0) - (a.simOffset ?? 0)),
+    [revealed]
+  );
+
+  const [mode, setMode] = useState("grouped"); // "grouped" | "chrono"
+  const [expandedNum, setExpandedNum] = useState(null); // one table open at a time; null = all collapsed
+
+  const revealedCount = (g) =>
+    simActive ? g.items.filter((c) => (c.simOffset ?? 0) <= sim.elapsed).length : g.items.length;
+
+  // Flash a table header blue when a comment lands in it (sim / live only).
+  const prevCounts = useRef({});
+  const [flashAt, setFlashAt] = useState({});
   useEffect(() => {
-    if (ref.current) {
-      ref.current.focus();
-      ref.current.setSelectionRange(draft.length, draft.length);
-    }
-    // eslint-disable-next-line
-  }, []);
+    const prev = prevCounts.current;
+    const hits = {};
+    groups.forEach((g) => {
+      const count = revealedCount(g);
+      if (simActive && prev[g.num] != null && count > prev[g.num]) hits[g.num] = Date.now();
+      prev[g.num] = count;
+    });
+    if (Object.keys(hits).length) setFlashAt((f) => ({ ...f, ...hits }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comments, simActive, sim ? sim.elapsed : null]);
+
   return (
-    <div style={styles.overlay} onClick={onCancel}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.modalEyebrow}>Edit question</div>
-        <div style={styles.modalTitle}>{title}</div>
-        {multiline ? (
-          <textarea
-            ref={ref}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            style={styles.modalTextarea}
-            rows={3}
-          />
-        ) : (
-          <input
-            ref={ref}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            style={styles.modalInput}
-          />
-        )}
-        <div style={styles.modalActions}>
-          <button style={styles.btnGhost} onClick={onCancel}>
-            Cancel
+    <aside style={s.sidebar}>
+      <div style={s.sidebarHead}>
+        <h2 style={s.sidebarTitle}>Comments</h2>
+        <div style={s.sidebarSubRow}>
+          <span style={s.livePill}>
+            <span style={s.liveDot} />
+            LIVE
+          </span>
+          <button style={s.linkBtn} onClick={onCopyAll}>
+            Copy All
+          </button>
+        </div>
+        <div style={s.viewToggle}>
+          <button
+            style={mode === "grouped" ? s.viewToggleOn : s.viewToggleOff}
+            onClick={() => setMode("grouped")}
+          >
+            By table
           </button>
           <button
-            style={styles.btnPrimary}
-            onClick={() => draft.trim() && onSave(draft.trim())}
+            style={mode === "chrono" ? s.viewToggleOn : s.viewToggleOff}
+            onClick={() => setMode("chrono")}
           >
-            Save question
+            Chronological
           </button>
         </div>
       </div>
-    </div>
-  );
-}
 
-function PromptModal({ mainQuestion, answers, initialExtra, onCancel, onSave }) {
-  const [draft, setDraft] = useState(initialExtra || "");
-  const preview = buildThemePrompt({ mainQuestion, answers, extraInstructions: draft });
-  return (
-    <div style={styles.overlay} onClick={onCancel}>
-      <div style={styles.promptModal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.modalEyebrow}>Theme generation</div>
-        <div style={styles.modalTitle}>View / edit prompt</div>
+      <div style={s.sidebarScroll}>
+        {mode === "chrono" &&
+          (chrono.length === 0 ? (
+            <div style={s.simTableEmpty}>No comments yet</div>
+          ) : (
+            chrono.map((c) => <CommentItem key={c.id} c={c} onUseComment={onUseComment} />)
+          ))}
 
-        <div style={styles.promptLabel}>Full prompt sent to Claude</div>
-        <pre style={styles.promptPre}>{preview}</pre>
-
-        <div style={styles.promptLabel}>Additional instructions (optional)</div>
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="e.g. Keep theme names under 4 words, or group by policy area"
-          style={styles.modalTextarea}
-          rows={3}
-        />
-
-        <div style={styles.modalActions}>
-          <button style={styles.btnGhost} onClick={onCancel}>
-            Cancel
-          </button>
-          <button style={styles.btnPrimary} onClick={() => onSave(draft.trim())}>
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AddQuestionModal({ onCancel, onSave }) {
-  const [label, setLabel] = useState("");
-  const [mainQuestion, setMainQuestion] = useState("");
-  const canSave = label.trim() && mainQuestion.trim();
-  return (
-    <div style={styles.overlay} onClick={onCancel}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.modalEyebrow}>New question</div>
-        <div style={styles.modalTitle}>Start a new round</div>
-
-        <div style={styles.promptLabel}>Dropdown label</div>
-        <input
-          autoFocus
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="e.g. Round 4 — Next steps"
-          style={styles.modalInput}
-        />
-
-        <div style={{ ...styles.promptLabel, marginTop: 16 }}>Main question</div>
-        <textarea
-          value={mainQuestion}
-          onChange={(e) => setMainQuestion(e.target.value)}
-          placeholder="What question is on the floor for this round?"
-          style={styles.modalTextarea}
-          rows={3}
-        />
-
-        <div style={styles.modalActions}>
-          <button style={styles.btnGhost} onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            style={styles.btnPrimary}
-            onClick={() => canSave && onSave({ label: label.trim(), mainQuestion: mainQuestion.trim() })}
-          >
-            Create question
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- main board ---------------- */
-
-function MainBoard({ meta, setMeta, tables, onAddTable }) {
-  const navigate = useNavigate();
-  const [editingQ, setEditingQ] = useState(false);
-  const totalAnswers = tables.reduce((s, t) => s + t.answers.length, 0);
-
-  return (
-    <div style={styles.page}>
-      <TopBar />
-      <div style={styles.mainHead}>
-        <div style={styles.eyebrow}>THE QUESTION ON THE FLOOR</div>
-        <div style={styles.questionRow}>
-          <h1 style={styles.mainQuestion}>{meta.mainQuestion}</h1>
-          <button
-            style={styles.iconBtn}
-            title="Edit question"
-            onClick={() => setEditingQ(true)}
-          >
-            <Pencil size={16} />
-          </button>
-        </div>
-        <div style={styles.subline}>
-          {tables.length} tables in session · {totalAnswers} ideas gathered so far
-        </div>
+        {mode === "grouped" &&
+          groups.map((g) => {
+            const expanded = expandedNum === g.num;
+            const gRevealed = simActive
+              ? g.items.filter((c) => (c.simOffset ?? 0) <= sim.elapsed)
+              : g.items;
+            const shown = expanded ? gRevealed : gRevealed.slice(-COLLAPSED_COUNT);
+            const hidden = gRevealed.length - shown.length;
+            return (
+              <div key={g.num}>
+                <button
+                  key={flashAt[g.num] || "h"}
+                  style={{
+                    ...s.tableHeader,
+                    ...(flashAt[g.num] ? { animation: "ttFlash 1.8s ease-out" } : {}),
+                  }}
+                  onClick={() => setExpandedNum(expanded ? null : g.num)}
+                >
+                  <ChevronDown
+                    size={13}
+                    color={C.faint}
+                    style={{
+                      transform: expanded ? "none" : "rotate(-90deg)",
+                      transition: "transform 0.12s",
+                      flexShrink: 0,
+                    }}
+                  />
+                  TABLE {g.num} ({g.items.length})
+                </button>
+                {simActive && gRevealed.length === 0 && (
+                  <div style={s.simTableEmpty}>No comments yet</div>
+                )}
+                {shown.map((c) => (
+                  <CommentItem key={c.id} c={c} onUseComment={onUseComment} />
+                ))}
+                {hidden > 0 && (
+                  <button style={s.moreRow} onClick={() => setExpandedNum(g.num)}>
+                    Show {hidden} more
+                  </button>
+                )}
+              </div>
+            );
+          })}
       </div>
 
-      <div style={styles.grid}>
-        <button className="wc-tile" style={styles.addTile} onClick={onAddTable}>
-          <div style={styles.addTilePlus}>
-            <Plus size={26} strokeWidth={2.4} />
+      {simActive ? (
+        <div style={s.simBar}>
+          <div style={s.simEdgeTrack}>
+            <div
+              style={{
+                ...s.simEdgeFill,
+                width: `${Math.min(100, (sim.elapsed / sim.duration) * 100)}%`,
+              }}
+            />
           </div>
-          <div style={styles.addTileLabel}>New table</div>
-        </button>
-
-        {tables.map((t, i) => (
-          <button
-            key={t.id}
-            className="wc-tile"
-            style={styles.tableTile}
-            onClick={() => navigate(`/table/${t.id}`)}
-          >
-            <div style={styles.tileTent} />
-            <div style={styles.tileNumber}>{String(i + 1).padStart(2, "0")}</div>
-            <div style={styles.tileName}>{t.name}</div>
-            <div style={styles.tileCount}>
-              {t.answers.length} {t.answers.length === 1 ? "idea" : "ideas"}
-            </div>
-          </button>
-        ))}
-      </div>
-
-      <div style={styles.themesCTA}>
-        <div>
-          <div style={styles.themesCTAEyebrow}>Whenever the room is ready</div>
-          <div style={styles.themesCTATitle}>Pull the threads together</div>
-          <div style={styles.themesCTASub}>
-            Generate topical themes from every idea across every table.
+          <div style={s.simBarTop}>
+            <span style={s.simBarLabel}>
+              <span style={{ ...s.liveDot, background: "#fff" }} />
+              {done ? "COMPLETE" : sim.status === "paused" ? "PAUSED" : "SIMULATING"}
+            </span>
+            <span style={s.simClock}>
+              {fmtClock(Math.min(sim.elapsed, sim.duration))} / {fmtClock(sim.duration)}
+            </span>
+          </div>
+          <div style={s.simBtnRow}>
+            {sim.status === "running" && !done ? (
+              <button style={s.simBtn} onClick={simControls.pause}>
+                <Pause size={12} fill="currentColor" />
+                Pause
+              </button>
+            ) : (
+              <button style={s.simBtn} onClick={done ? simControls.start : simControls.resume}>
+                <Play size={12} fill="currentColor" />
+                {done ? "Restart" : "Start"}
+              </button>
+            )}
+            <button style={s.simBtn} onClick={simControls.stop}>
+              <Square size={11} fill="currentColor" />
+              Stop
+            </button>
+            <button
+              style={{ ...s.simBtn, ...(sim.speed === 2 ? s.simBtnOn : {}) }}
+              onClick={() => simControls.setSpeed(sim.speed === 2 ? 1 : 2)}
+            >
+              2×
+            </button>
           </div>
         </div>
-        <button style={styles.btnGold} onClick={() => navigate("/themes")}>
-          <Sparkles size={16} style={{ marginRight: 8 }} />
-          Generate themes
-        </button>
-      </div>
-
-      {editingQ && (
-        <EditModal
-          title="Front-page prompt"
-          value={meta.mainQuestion}
-          multiline
-          onCancel={() => setEditingQ(false)}
-          onSave={(v) => {
-            setMeta({ ...meta, mainQuestion: v });
-            setEditingQ(false);
-          }}
-        />
+      ) : (
+        <div style={s.simFooter}>
+          <button style={s.simTrigger} onClick={simControls.start}>
+            <Play size={11} fill="currentColor" />
+            Simulate incoming comments
+          </button>
+        </div>
       )}
-    </div>
+    </aside>
   );
 }
 
-/* ---------------- table detail page ---------------- */
+/* ---------------- theme composer ---------------- */
 
-function TablePage({ tables, meta, setMeta, onAddAnswer, onRemoveAnswer }) {
-  const navigate = useNavigate();
-  const { tableId } = useParams();
-  const table = tables.find((t) => t.id === tableId);
+function ThemeComposer({ onAdd }) {
   const [draft, setDraft] = useState("");
-  const [editingQ, setEditingQ] = useState(false);
-  const [hoverId, setHoverId] = useState(null);
-
-  if (!table) return <Navigate to="/" replace />;
-
   const submit = () => {
-    const text = draft.trim();
-    if (!text) return;
-    onAddAnswer(table.id, text);
+    const v = draft.trim();
+    if (!v) return;
+    onAdd(v);
     setDraft("");
   };
-
   return (
-    <div style={styles.page}>
-      <TopBar />
-      <div style={styles.tableHeadWrap}>
-        <button style={styles.backLink} onClick={() => navigate("/")}>
-          <ArrowLeft size={15} style={{ marginRight: 6 }} />
-          Board
-        </button>
-        <div style={styles.eyebrow}>{table.name.toUpperCase()}</div>
-        <div style={styles.questionRow}>
-          <h1 style={styles.tableQuestion}>{meta.tableQuestion}</h1>
-          <button style={styles.iconBtn} title="Edit question" onClick={() => setEditingQ(true)}>
-            <Pencil size={16} />
-          </button>
-        </div>
-      </div>
-
-      <div style={styles.composerCard}>
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Submit an idea"
-          style={styles.composerTextarea}
-          rows={2}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
-          }}
-        />
-        <button style={styles.btnPrimary} onClick={submit} disabled={!draft.trim()}>
-          Submit
-        </button>
-      </div>
-
-      <div style={styles.answersSection}>
-        <div style={styles.answersSubhead}>Answers</div>
-        {table.answers.length === 0 && (
-          <div style={styles.emptyNote}>No ideas yet — be the first to add one above.</div>
-        )}
-        <div style={styles.answersList}>
-          {table.answers.map((a) => (
-            <div
-              key={a.id}
-              style={styles.answerRow}
-              onMouseEnter={() => setHoverId(a.id)}
-              onMouseLeave={() => setHoverId(null)}
-            >
-              <span style={styles.answerText}>{a.text}</span>
-              {hoverId === a.id && (
-                <button
-                  style={styles.answerRemove}
-                  title="Remove answer"
-                  onClick={() => onRemoveAnswer(table.id, a.id)}
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={styles.endRow}>
-        <button style={styles.btnDark} onClick={() => navigate("/")}>
-          End
-        </button>
-      </div>
-
-      {editingQ && (
-        <EditModal
-          title="Table-page prompt"
-          value={meta.tableQuestion}
-          onCancel={() => setEditingQ(false)}
-          onSave={(v) => {
-            setMeta({ ...meta, tableQuestion: v });
-            setEditingQ(false);
-          }}
-        />
-      )}
+    <div style={s.composer}>
+      <input
+        value={draft}
+        maxLength={MAX_THEME_LEN}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        placeholder="Write a theme…"
+        style={s.composerInput}
+      />
+      <button
+        style={{ ...s.arrowBtn, opacity: draft.trim() ? 1 : 0.4 }}
+        onClick={submit}
+        disabled={!draft.trim()}
+        title="Add theme"
+      >
+        <ArrowRight size={18} color="#fff" />
+      </button>
     </div>
   );
 }
 
-/* ---------------- themes page ---------------- */
+/* ---------------- theme row (WYSIWYG) ---------------- */
 
-function ThemesPage({
-  meta,
-  tables,
-  themesData,
-  setThemesData,
-  promptExtra,
-  setPromptExtra,
-}) {
-  const navigate = useNavigate();
-  const { activeQuestionId, autoTriggeredRef } = useContext(QuestionsContext);
-  const [status, setStatus] = useState("idle"); // idle | loading | error
-  const [errMsg, setErrMsg] = useState("");
-  const [newThemeDraft, setNewThemeDraft] = useState("");
-  const [addingTheme, setAddingTheme] = useState(false);
-  const [dragOverTheme, setDragOverTheme] = useState(null);
-  const [confirmClear, setConfirmClear] = useState(false);
-  const [editingThemeId, setEditingThemeId] = useState(null);
-  const [showPromptModal, setShowPromptModal] = useState(false);
-
-  const allAnswers = tables.flatMap((t) =>
-    t.answers.map((a) => ({ id: a.id, text: a.text, table: t.name }))
-  );
-
-  const generate = useCallback(async () => {
-    if (allAnswers.length === 0) {
-      setErrMsg("There are no ideas across any table yet.");
-      setStatus("error");
-      return;
-    }
-    setStatus("loading");
-    setErrMsg("");
-    try {
-      const response = await fetch("/api/generate-themes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mainQuestion: meta.mainQuestion,
-          answers: allAnswers.map(({ id, text }) => ({ id, text })),
-          extraInstructions: promptExtra,
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || "Request failed");
-      }
-      const parsed = await response.json();
-      const themes = (parsed.themes || []).map((t) => ({
-        id: uid(),
-        name: t.name,
-        answerIds: t.answerIds || [],
-      }));
-      const next = { generated: true, themes };
-      setThemesData(next);
-      setStatus("idle");
-    } catch (e) {
-      console.error(e);
-      setErrMsg("Something went wrong while generating themes. Please try again.");
-      setStatus("error");
-    }
-  }, [allAnswers, meta.mainQuestion, promptExtra, setThemesData]);
+function ThemeRow({ theme, onChange, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(theme.text);
+  const inputRef = useRef(null);
 
   useEffect(() => {
-    if (
-      !themesData.generated &&
-      !autoTriggeredRef.current.has(activeQuestionId) &&
-      allAnswers.length > 0
-    ) {
-      autoTriggeredRef.current.add(activeQuestionId);
-      generate();
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
     }
-    // eslint-disable-next-line
-  }, []);
+  }, [editing]);
 
-  const answerLookup = {};
-  allAnswers.forEach((a) => (answerLookup[a.id] = a));
-
-  const assignedIds = new Set(themesData.themes.flatMap((t) => t.answerIds));
-  const unassigned = allAnswers.filter((a) => !assignedIds.has(a.id));
-
-  const moveAnswer = (answerId, fromThemeId, toThemeId) => {
-    if (fromThemeId === toThemeId) return;
-    const next = {
-      ...themesData,
-      themes: themesData.themes.map((t) => {
-        if (t.id === fromThemeId) {
-          return { ...t, answerIds: t.answerIds.filter((id) => id !== answerId) };
-        }
-        if (t.id === toThemeId) {
-          return { ...t, answerIds: [...t.answerIds, answerId] };
-        }
-        return t;
-      }),
-    };
-    setThemesData(next);
+  const startEdit = () => {
+    setDraft(theme.text);
+    setEditing(true);
   };
 
-  const renameTheme = (themeId, name) => {
-    const next = {
-      ...themesData,
-      themes: themesData.themes.map((t) => (t.id === themeId ? { ...t, name } : t)),
-    };
-    setThemesData(next);
-  };
-
-  const addTheme = () => {
-    const name = newThemeDraft.trim();
-    if (!name) return;
-    const next = {
-      ...themesData,
-      generated: true,
-      themes: [...themesData.themes, { id: uid(), name, answerIds: [] }],
-    };
-    setThemesData(next);
-    setNewThemeDraft("");
-    setAddingTheme(false);
-  };
-
-  const clearThemes = () => {
-    const next = { generated: false, themes: [] };
-    setThemesData(next);
-    autoTriggeredRef.current.delete(activeQuestionId);
-    setStatus("idle");
-    setErrMsg("");
-    setConfirmClear(false);
-  };
-
-  const onDropTo = (e, toThemeId) => {
-    e.preventDefault();
-    setDragOverTheme(null);
-    try {
-      const data = JSON.parse(e.dataTransfer.getData("text/plain"));
-      moveAnswer(data.answerId, data.fromThemeId, toThemeId);
-    } catch (err) {
-      /* ignore malformed drag payload */
+  const commit = () => {
+    setEditing(false);
+    const v = draft.trim().slice(0, MAX_THEME_LEN);
+    if (!v) {
+      onDelete();
+      return;
     }
+    if (v !== theme.text) onChange(v);
   };
 
   return (
-    <div style={styles.page}>
-      <TopBar />
-      <div style={styles.tableHeadWrap}>
-        <button style={styles.backLink} onClick={() => navigate("/")}>
-          <ArrowLeft size={15} style={{ marginRight: 6 }} />
-          Board
+    <div className="tt-row" style={s.themeRow}>
+      <SourceBadge source={theme.source} />
+      {editing ? (
+        <input
+          ref={inputRef}
+          value={draft}
+          maxLength={MAX_THEME_LEN}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              setDraft(theme.text);
+              setEditing(false);
+            }
+          }}
+          style={s.themeEditInput}
+        />
+      ) : (
+        <button className="tt-theme-text" style={s.themeText} onClick={startEdit} title="Click to edit">
+          {theme.text}
         </button>
-        <div style={styles.eyebrow}>SENSEMAKING</div>
-        <h1 style={styles.tableQuestion}>What is the room actually saying?</h1>
-        <div style={styles.subline}>
-          {allAnswers.length} ideas from {tables.length} tables
-          {themesData.generated ? ` · sorted into ${themesData.themes.length} themes` : ""}
-        </div>
+      )}
+      <button
+        className="tt-hover tt-theme-x"
+        style={{ ...s.themeDelete, opacity: 0 }}
+        onClick={onDelete}
+        title="Delete theme"
+      >
+        <X size={13} strokeWidth={2.6} />
+      </button>
+    </div>
+  );
+}
+
+/* ---------------- share menu ---------------- */
+
+function ShareMenu({ onPresent, onReport, onJson, onClose }) {
+  return (
+    <>
+      <div style={s.popScrim} onClick={onClose} />
+      <div style={s.shareMenu}>
+        <button style={s.shareItem} onClick={onPresent}>
+          <Presentation size={15} color={C.body} />
+          Present
+        </button>
+        <button style={s.shareItem} onClick={onReport}>
+          <FileText size={15} color={C.body} />
+          Download Report
+        </button>
+        <button style={s.shareItem} onClick={onJson}>
+          <Braces size={15} color={C.body} />
+          Download JSON
+        </button>
       </div>
+    </>
+  );
+}
 
-      {status === "loading" && (
-        <div style={styles.loadingCard}>
-          <div style={styles.spinner} />
-          <div style={styles.loadingText}>Reading every table's ideas and grouping the threads…</div>
-        </div>
-      )}
+/* ---------------- generate modal ---------------- */
 
-      {status === "error" && (
-        <div style={styles.errorCard}>
-          <div style={styles.errorText}>{errMsg}</div>
-          <button style={styles.btnPrimary} onClick={generate}>
-            <RotateCcw size={14} style={{ marginRight: 6 }} />
-            Try again
-          </button>
-        </div>
-      )}
+function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAll, onAccept, onClose }) {
+  const themeById = useMemo(() => {
+    const m = new Map();
+    themes.forEach((t, i) => m.set(t.id, { ...t, index: i + 1 }));
+    return m;
+  }, [themes]);
 
-      {status !== "loading" && allAnswers.length > 0 && (
-        <>
-          <div style={styles.themesToolbar}>
-            <button style={styles.btnGhostDark} onClick={generate}>
-              <RotateCcw size={13} style={{ marginRight: 6 }} />
-              {themesData.generated ? "Regenerate" : "Generate with AI"}
-            </button>
-            <button style={styles.btnGhostDark} onClick={() => setShowPromptModal(true)}>
-              <MessageSquareText size={13} style={{ marginRight: 6 }} />
-              View/Edit Prompt
-            </button>
-            {themesData.themes.length > 0 && (!confirmClear ? (
-              <button style={styles.btnGhostDark} onClick={() => setConfirmClear(true)}>
-                <Trash2 size={13} style={{ marginRight: 6 }} />
-                Clear
-              </button>
-            ) : (
-              <div style={styles.confirmClearBox}>
-                <span style={styles.confirmClearText}>Clear all themes?</span>
-                <button style={styles.btnRustSmall} onClick={clearThemes}>
-                  Clear
-                </button>
-                <button style={styles.iconBtnGhost} onClick={() => setConfirmClear(false)}>
-                  <X size={15} />
-                </button>
-              </div>
-            ))}
-            {!addingTheme ? (
-              <button style={styles.btnGoldSmall} onClick={() => setAddingTheme(true)}>
-                <Plus size={14} style={{ marginRight: 6 }} />
-                Add theme
-              </button>
-            ) : (
-              <div style={styles.addThemeForm}>
-                <input
-                  autoFocus
-                  value={newThemeDraft}
-                  onChange={(e) => setNewThemeDraft(e.target.value)}
-                  placeholder="Theme name"
-                  style={styles.addThemeInput}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") addTheme();
-                    if (e.key === "Escape") {
-                      setAddingTheme(false);
-                      setNewThemeDraft("");
-                    }
-                  }}
-                />
-                <button style={styles.iconBtnGold} onClick={addTheme}>
-                  <Check size={15} />
-                </button>
-                <button
-                  style={styles.iconBtnGhost}
-                  onClick={() => {
-                    setAddingTheme(false);
-                    setNewThemeDraft("");
-                  }}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-            )}
+  const ordered = useMemo(() => {
+    const withSimilar = (c) => (c.similarThemeIds || []).some((id) => themeById.has(id));
+    return [...candidates].sort((a, b) => (withSimilar(b) ? 1 : 0) - (withSimilar(a) ? 1 : 0));
+  }, [candidates, themeById]);
+
+  const [selected, setSelected] = useState(() => new Set());
+  useEffect(() => {
+    setSelected(new Set(candidates.map((c) => c.id)));
+  }, [candidates]);
+
+  const toggle = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const chosen = ordered.filter((c) => selected.has(c.id));
+  const loading = status === "loading";
+
+  return (
+    <div style={s.overlay} onClick={onClose}>
+      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={s.eyebrow}>CREATE THEMES FOR THIS QUESTION…</div>
+        <h2 style={s.modalTitle}>
+          Select the <span style={{ color: C.green }}>generated themes</span> you would like to keep.
+        </h2>
+
+        <div style={s.modalToolbar}>
+          <div style={s.toolbarLeft}>
+            <span style={s.toolLabel}>GENERATED THEMES</span>
+            <span style={s.countPill}>{candidates.length}</span>
           </div>
+          <div style={s.toolbarRight}>
+            <button style={s.ghostBtn} onClick={onClearAll} disabled={loading || candidates.length === 0}>
+              Clear All
+            </button>
+            <button style={s.softGreenBtn} onClick={onRefresh} disabled={loading}>
+              {loading ? <Spinner size={13} /> : <RotateCw size={13} />}
+              Refresh
+            </button>
+            <button
+              style={{ ...s.greenBtn, opacity: chosen.length ? 1 : 0.45 }}
+              onClick={() => onAccept(chosen)}
+              disabled={!chosen.length || loading}
+            >
+              Accept {chosen.length} {chosen.length === 1 ? "theme" : "themes"}
+              <ArrowRight size={14} />
+            </button>
+          </div>
+        </div>
 
-          <div style={styles.themeColumns}>
-            {themesData.themes.map((theme) => (
-              <div
-                key={theme.id}
-                style={{
-                  ...styles.themeColumn,
-                  ...(dragOverTheme === theme.id ? styles.themeColumnOver : {}),
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOverTheme(theme.id);
-                }}
-                onDragLeave={() => setDragOverTheme(null)}
-                onDrop={(e) => onDropTo(e, theme.id)}
-              >
-                <div style={styles.themeColumnHead}>
-                  <div style={styles.themeNameRow}>
-                    <div style={styles.themeName}>{theme.name}</div>
-                    <button
-                      style={styles.themeEditBtn}
-                      title="Rename theme"
-                      onClick={() => setEditingThemeId(theme.id)}
-                    >
-                      <Pencil size={11} />
-                    </button>
-                  </div>
-                  <div style={styles.themeCount}>{theme.answerIds.length}</div>
-                </div>
-                <div style={styles.themeCards}>
-                  {theme.answerIds.map((aid) => {
-                    const a = answerLookup[aid];
-                    if (!a) return null;
-                    return (
-                      <div
-                        key={aid}
-                        draggable
-                        onDragStart={(e) =>
-                          e.dataTransfer.setData(
-                            "text/plain",
-                            JSON.stringify({ answerId: aid, fromThemeId: theme.id })
-                          )
-                        }
-                        style={styles.themeAnswerCard}
-                      >
-                        <GripVertical size={13} color={TEXT_MUTE} style={{ flexShrink: 0 }} />
-                        <div>
-                          <div style={styles.themeAnswerText}>{a.text}</div>
-                          <div style={styles.themeAnswerSource}>{a.table}</div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {theme.answerIds.length === 0 && (
-                    <div style={styles.themeEmptySlot}>Drag an idea here</div>
-                  )}
-                </div>
-              </div>
-            ))}
+        <div style={s.candidateList}>
+          {loading && candidates.length === 0 && (
+            <div style={s.modalStateBox}>
+              <Spinner />
+              <span>Reading every table's comments and clustering the ideas…</span>
+            </div>
+          )}
 
-            {unassigned.length > 0 && (
-              <div
-                style={styles.themeColumn}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => onDropTo(e, "__unassigned__")}
-              >
-                <div style={styles.themeColumnHead}>
-                  <div style={{ ...styles.themeName, color: TEXT_MUTE }}>Unsorted</div>
-                  <div style={styles.themeCount}>{unassigned.length}</div>
-                </div>
-                <div style={styles.themeCards}>
-                  {unassigned.map((a) => (
-                    <div
-                      key={a.id}
-                      draggable
-                      onDragStart={(e) =>
-                        e.dataTransfer.setData(
-                          "text/plain",
-                          JSON.stringify({ answerId: a.id, fromThemeId: "__unassigned__" })
-                        )
-                      }
-                      style={styles.themeAnswerCard}
-                    >
-                      <GripVertical size={13} color={TEXT_MUTE} style={{ flexShrink: 0 }} />
-                      <div>
-                        <div style={styles.themeAnswerText}>{a.text}</div>
-                        <div style={styles.themeAnswerSource}>{a.table}</div>
-                      </div>
+          {status === "error" && candidates.length === 0 && (
+            <div style={s.modalStateBox}>
+              <span style={{ color: C.redX }}>{error || "Something went wrong."}</span>
+              <button style={s.softGreenBtn} onClick={onRefresh}>
+                <RotateCw size={13} />
+                Try again
+              </button>
+            </div>
+          )}
+
+          {!loading && status !== "error" && candidates.length === 0 && (
+            <div style={s.modalStateBox}>
+              <span>No candidate themes yet. Hit Refresh to generate a fresh set.</span>
+            </div>
+          )}
+
+          {ordered.map((c) => {
+            const sims = (c.similarThemeIds || []).map((id) => themeById.get(id)).filter(Boolean);
+            const isOn = selected.has(c.id);
+            return (
+              <div key={c.id} style={s.candidateRow}>
+                <SourceBadge source="AI" size={24} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={s.candidateText}>{c.text}</div>
+                  {sims.map((t) => (
+                    <div key={t.id} style={s.similarNote}>
+                      <CornerDownRight size={12} color={C.mute} />
+                      Similar to <span style={{ color: C.blue, fontWeight: 700 }}>#{t.index}</span>{" "}
+                      <span style={{ color: C.mute }}>({t.text})</span>
                     </div>
                   ))}
                 </div>
+                <button
+                  style={isOn ? s.checkOn : s.checkOff}
+                  onClick={() => toggle(c.id)}
+                  title={isOn ? "Selected" : "Not selected"}
+                >
+                  {isOn && <Check size={14} color="#fff" strokeWidth={3} />}
+                </button>
               </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {status === "idle" && allAnswers.length === 0 && (
-        <div style={styles.errorCard}>
-          <div style={styles.errorText}>Add a few ideas at the tables first, then come back here.</div>
+            );
+          })}
         </div>
-      )}
-
-      {editingThemeId && (
-        <EditModal
-          title="Theme name"
-          value={themesData.themes.find((t) => t.id === editingThemeId)?.name || ""}
-          onCancel={() => setEditingThemeId(null)}
-          onSave={(v) => {
-            renameTheme(editingThemeId, v);
-            setEditingThemeId(null);
-          }}
-        />
-      )}
-
-      {showPromptModal && (
-        <PromptModal
-          mainQuestion={meta.mainQuestion}
-          answers={allAnswers.map(({ id, text }) => ({ id, text }))}
-          initialExtra={promptExtra}
-          onCancel={() => setShowPromptModal(false)}
-          onSave={(v) => {
-            setPromptExtra(v);
-            setShowPromptModal(false);
-          }}
-        />
-      )}
+      </div>
     </div>
   );
 }
 
-/* ---------------- root ---------------- */
+/* ---------------- present view ---------------- */
+
+function RotatingLine({ items, style, paused }) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    setI(0);
+  }, [items.join("|")]);
+  useEffect(() => {
+    if (paused || items.length < 2) return;
+    const id = setInterval(() => setI((n) => (n + 1) % items.length), 4200);
+    return () => clearInterval(id);
+  }, [items.length, items.join("|"), paused]);
+  const idx = i % items.length;
+  return (
+    <div key={idx} style={{ ...style, animation: "ttFadeUp 0.4s ease" }}>
+      “{items[idx]}”
+    </div>
+  );
+}
+
+function PresentView({ question, themes, repCommentsForTheme, onBack }) {
+  const [hoverId, setHoverId] = useState(null);
+  return (
+    <div style={s.presentWrap}>
+      <div style={s.presentInner}>
+        <button style={s.backBtn} onClick={onBack}>
+          <ArrowLeft size={15} />
+          BACK
+        </button>
+        <h1 style={s.presentTitle}>{question.mainQuestion}</h1>
+        <div style={s.presentCount}>
+          {themes.length} {themes.length === 1 ? "theme" : "themes"}
+        </div>
+        <div style={s.presentList}>
+          {themes.length === 0 && <div style={s.presentEmpty}>No themes yet.</div>}
+          {themes.map((t, i) => {
+            const reps = repCommentsForTheme(t).map((c) => c.text);
+            return (
+              <div
+                key={t.id}
+                className="tt-present-row"
+                style={s.presentRow}
+                onMouseEnter={() => setHoverId(t.id)}
+                onMouseLeave={() => setHoverId(null)}
+              >
+                <span style={s.presentNum}>{i + 1}</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="tt-present-text" style={s.presentThemeText}>
+                    {t.text}
+                  </div>
+                  {reps.length > 0 && (
+                    <RotatingLine items={reps} style={s.presentQuote} paused={hoverId === t.id} />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- question switcher ---------------- */
+
+function QuestionSwitcher({ questions, activeId, onSelect }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <button style={s.qTriangle} onClick={() => setOpen((v) => !v)} title="Switch question">
+        <ChevronDown size={20} color={C.mute} />
+      </button>
+      {open && (
+        <>
+          <div style={s.popScrim} onClick={() => setOpen(false)} />
+          <div style={s.qMenu}>
+            {questions.map((q) => (
+              <button
+                key={q.id}
+                style={{
+                  ...s.qMenuItem,
+                  ...(q.id === activeId ? { color: C.blue, fontWeight: 700 } : {}),
+                }}
+                onClick={() => {
+                  onSelect(q.id);
+                  setOpen(false);
+                }}
+              >
+                <span style={s.qMenuLabel}>{q.label}</span>
+                <span style={s.qMenuText}>{q.mainQuestion}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
+/* ---------------- app ---------------- */
 
 export default function App() {
-  const navigate = useNavigate();
-  const [loaded, setLoaded] = useState(false);
-  const [questions, setQuestionsState] = useState([]);
-  const [activeQuestionId, setActiveQuestionIdState] = useState(null);
-  const autoTriggeredRef = useRef(new Set());
+  const [state, setState] = useState(null);
+  const [view, setView] = useState("work"); // "work" | "present"
+  const [showGenerate, setShowGenerate] = useState(false);
+  const [genStatus, setGenStatus] = useState("idle"); // idle | loading | error
+  const [genError, setGenError] = useState("");
+  const [shareOpen, setShareOpen] = useState(false);
+  const [toast, setToast] = useState("");
+  // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
+  // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
+  const [sim, setSim] = useState(null);
+  const [, tick] = useReducer((n) => n + 1, 0);
 
   useEffect(() => {
-    (async () => {
-      let qs = await storageGet("wc:questions");
-      if (!qs || !Array.isArray(qs) || qs.length === 0) {
-        qs = buildSeedQuestions();
-        await storageSet("wc:questions", qs);
-      }
-      setQuestionsState(qs);
+    setState(loadState());
+  }, []);
+  useEffect(() => {
+    if (state) saveState(state);
+  }, [state]);
 
-      const savedActiveId = await storageGet("wc:activeQuestionId");
-      const activeId = qs.some((q) => q.id === savedActiveId) ? savedActiveId : qs[0].id;
-      setActiveQuestionIdState(activeId);
-      await storageSet("wc:activeQuestionId", activeId);
+  const simElapsed = !sim
+    ? 0
+    : sim.status === "running"
+    ? sim.anchorElapsed + (Date.now() - sim.anchorTime) * sim.speed
+    : sim.anchorElapsed;
+  const simRunning = !!sim && sim.status === "running" && simElapsed < SIM_WINDOW_MS;
 
-      setLoaded(true);
-    })();
+  useEffect(() => {
+    if (!simRunning) return;
+    const id = setInterval(tick, 400);
+    return () => clearInterval(id);
+  }, [simRunning]);
+
+  const simControls = useMemo(
+    () => ({
+      start: () => setSim({ status: "running", speed: 1, anchorTime: Date.now(), anchorElapsed: 0 }),
+      resume: () => setSim((p) => (p ? { ...p, status: "running", anchorTime: Date.now() } : p)),
+      pause: () =>
+        setSim((p) => {
+          if (!p) return p;
+          const e =
+            p.status === "running"
+              ? p.anchorElapsed + (Date.now() - p.anchorTime) * p.speed
+              : p.anchorElapsed;
+          return { ...p, status: "paused", anchorElapsed: e };
+        }),
+      stop: () => setSim(null),
+      setSpeed: (speed) =>
+        setSim((p) => {
+          if (!p) return p;
+          const e =
+            p.status === "running"
+              ? p.anchorElapsed + (Date.now() - p.anchorTime) * p.speed
+              : p.anchorElapsed;
+          return { ...p, speed, anchorElapsed: e, anchorTime: Date.now() };
+        }),
+    }),
+    []
+  );
+
+  const flash = useCallback((msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 1800);
   }, []);
 
-  const setQuestions = (next) => {
-    setQuestionsState(next);
-    storageSet("wc:questions", next);
-  };
-  const setActiveQuestionId = (id) => {
-    setActiveQuestionIdState(id);
-    storageSet("wc:activeQuestionId", id);
-  };
-  const updateActiveQuestion = (updater) => {
-    setQuestions(questions.map((q) => (q.id === activeQuestionId ? updater(q) : q)));
+  const active = state && state.questions.find((q) => q.id === state.activeId);
+  const comments = (state && state.comments[state.activeId]) || [];
+  const themes = (state && state.themes[state.activeId]) || [];
+  const candidates = (state && state.candidates[state.activeId]) || [];
+
+  const setThemes = useCallback((fn) => {
+    setState((prev) => ({
+      ...prev,
+      themes: { ...prev.themes, [prev.activeId]: fn(prev.themes[prev.activeId] || []) },
+    }));
+  }, []);
+  const setCandidates = useCallback((fn) => {
+    setState((prev) => ({
+      ...prev,
+      candidates: { ...prev.candidates, [prev.activeId]: fn(prev.candidates[prev.activeId] || []) },
+    }));
+  }, []);
+
+  const commentById = useMemo(() => {
+    const m = new Map();
+    comments.forEach((c) => m.set(c.id, c));
+    return m;
+  }, [comments]);
+
+  const commentsForTheme = useCallback(
+    (theme) => {
+      if (theme.source === "COMMENT") {
+        const c = commentById.get(theme.sourceCommentId);
+        return c ? [c] : [];
+      }
+      if (theme.source === "AI") {
+        return (theme.informingCommentIds || []).map((id) => commentById.get(id)).filter(Boolean);
+      }
+      return [];
+    },
+    [commentById]
+  );
+
+  const repCommentsForTheme = useCallback(
+    (theme) =>
+      (theme.representativeCommentIds || []).map((id) => commentById.get(id)).filter(Boolean),
+    [commentById]
+  );
+
+  /* --- theme mutations --- */
+  const addManualTheme = (text) =>
+    setThemes((list) => [...list, makeTheme({ text, source: "MANUAL" })]);
+
+  const addCommentTheme = (comment) =>
+    setThemes((list) => {
+      if (list.some((t) => t.source === "COMMENT" && t.sourceCommentId === comment.id)) {
+        flash("That comment is already a theme");
+        return list;
+      }
+      return [...list, makeTheme({ text: comment.text, source: "COMMENT", sourceCommentId: comment.id })];
+    });
+
+  const changeTheme = (id, text) =>
+    setThemes((list) =>
+      list.map((t) =>
+        t.id === id
+          ? t.source === "COMMENT"
+            ? { ...t, text, source: "MANUAL", sourceCommentId: null } // edited away from its comment
+            : { ...t, text }
+          : t
+      )
+    );
+  const deleteTheme = (id) => setThemes((list) => list.filter((t) => t.id !== id));
+
+  /* --- generation --- */
+  const runGenerate = useCallback(async () => {
+    if (genStatus === "loading") return;
+    if (comments.length === 0) {
+      setGenError("This question has no comments yet.");
+      setGenStatus("error");
+      return;
+    }
+    setGenStatus("loading");
+    setGenError("");
+    try {
+      // Send short positional ids (comment index) so the model echoes back
+      // compact id lists — long stable ids blow past max_tokens on big sets.
+      const res = await fetch("/api/generate-themes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mainQuestion: active.mainQuestion,
+          comments: comments.map((c, i) => ({ id: String(i), table: c.tableName, text: c.text })),
+          existingThemes: themes.map((t, i) => ({ id: String(i), text: t.text })),
+          previousCandidates: candidates.map((c) => ({ text: c.text })),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Request failed");
+      }
+      const data = await res.json();
+      const commentAt = (i) => comments[Number(i)]?.id;
+      const themeAt = (i) => themes[Number(i)]?.id;
+      const next = (data.themes || [])
+        .map((t) => {
+          const reps = (t.representativeCommentIds || []).map(commentAt).filter(Boolean);
+          return {
+            id: uid(),
+            text: (t.text || "").slice(0, MAX_THEME_LEN),
+            // The model only returns representatives; treat them as the
+            // theme's comments everywhere downstream (report, present).
+            informingCommentIds: reps,
+            representativeCommentIds: reps,
+            similarThemeIds: (t.similarThemeIds || []).map(themeAt).filter(Boolean),
+          };
+        })
+        .filter((t) => t.text);
+      setCandidates(() => next);
+      setGenStatus("idle");
+    } catch (e) {
+      console.error(e);
+      setGenError(
+        e.message && e.message !== "Failed to fetch"
+          ? e.message
+          : "Couldn't reach the theme generator API."
+      );
+      setGenStatus("error");
+    }
+  }, [genStatus, comments, active, themes, candidates, commentById, setCandidates]);
+
+  const openGenerate = () => {
+    setShowGenerate(true);
+    if (candidates.length === 0) runGenerate();
   };
 
-  const selectQuestion = (id) => {
-    setActiveQuestionId(id);
-    navigate("/");
+  const acceptCandidates = (chosen) => {
+    setThemes((list) => {
+      const seen = new Set(list.map((t) => t.text.toLowerCase()));
+      const additions = chosen
+        .filter((c) => !seen.has(c.text.toLowerCase()))
+        .map((c) =>
+          makeTheme({
+            text: c.text,
+            source: "AI",
+            informingCommentIds: c.informingCommentIds,
+            representativeCommentIds: c.representativeCommentIds,
+            similarThemeIds: c.similarThemeIds,
+          })
+        );
+      return [...list, ...additions];
+    });
+    setShowGenerate(false);
+    flash(`Added ${chosen.length} ${chosen.length === 1 ? "theme" : "themes"}`);
   };
 
-  const addQuestion = ({ label, mainQuestion }) => {
-    const newQuestion = {
-      id: uid(),
-      label,
-      mainQuestion,
-      tableQuestion: "What do you think?",
-      tables: [],
-      themesData: { generated: false, themes: [] },
-      promptExtra: "",
+  /* --- share actions --- */
+  const copyThemes = () => {
+    navigator.clipboard
+      .writeText(themes.map((t) => t.text).join("\n"))
+      .then(() => flash("Themes copied"))
+      .catch(() => flash("Copy failed"));
+  };
+
+  const copyAllComments = () => {
+    const byTable = new Map();
+    comments.forEach((c) => {
+      if (!byTable.has(c.tableNum)) byTable.set(c.tableNum, []);
+      byTable.get(c.tableNum).push(c.text);
+    });
+    const text = [...byTable.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([num, items]) => `TABLE ${num}\n${items.join("\n")}`)
+      .join("\n\n");
+    navigator.clipboard
+      .writeText(text)
+      .then(() => flash("All comments copied"))
+      .catch(() => flash("Copy failed"));
+  };
+
+  const downloadReport = () => {
+    const lines = [active.mainQuestion, ""];
+    themes.forEach((t) => {
+      lines.push(`${t.text}  [${SOURCE_LABEL[t.source]}]`);
+      const cs = commentsForTheme(t);
+      if (cs.length === 0) lines.push("   (no linked comments)");
+      cs.forEach((c) => lines.push(`   • [${c.tableName}] ${c.text}`));
+      lines.push("");
+    });
+    download("theme-report.txt", lines.join("\n"));
+    setShareOpen(false);
+  };
+
+  const downloadJson = () => {
+    const payload = {
+      question: active.mainQuestion,
+      generatedAt: new Date().toISOString(),
+      themes: themes.map((t) => ({
+        text: t.text,
+        source: t.source,
+        comments: commentsForTheme(t).map((c) => ({ table: c.tableName, text: c.text })),
+      })),
     };
-    setQuestions([...questions, newQuestion]);
-    setActiveQuestionId(newQuestion.id);
-    navigate("/");
+    download("themes.json", JSON.stringify(payload, null, 2), "application/json");
+    setShareOpen(false);
   };
 
-  const setMeta = (nextMeta) => {
-    updateActiveQuestion((q) => ({
-      ...q,
-      mainQuestion: nextMeta.mainQuestion,
-      tableQuestion: nextMeta.tableQuestion,
-    }));
-  };
-  const setThemesData = (next) => {
-    updateActiveQuestion((q) => ({ ...q, themesData: next }));
-  };
-  const setPromptExtra = (next) => {
-    updateActiveQuestion((q) => ({ ...q, promptExtra: next }));
-  };
-
-  const handleAddTable = () => {
-    const activeQuestion = questions.find((q) => q.id === activeQuestionId);
-    const nextTable = { id: uid(), name: `Table ${activeQuestion.tables.length + 1}`, answers: [] };
-    updateActiveQuestion((q) => ({ ...q, tables: [...q.tables, nextTable] }));
-    navigate(`/table/${nextTable.id}`);
-  };
-
-  const handleAddAnswer = (tableId, text) => {
-    updateActiveQuestion((q) => ({
-      ...q,
-      tables: q.tables.map((t) =>
-        t.id === tableId ? { ...t, answers: [...t.answers, { id: uid(), text }] } : t
-      ),
-    }));
-  };
-
-  const handleRemoveAnswer = (tableId, answerId) => {
-    updateActiveQuestion((q) => ({
-      ...q,
-      tables: q.tables.map((t) =>
-        t.id === tableId ? { ...t, answers: t.answers.filter((a) => a.id !== answerId) } : t
-      ),
-    }));
-  };
-
-  if (!loaded) {
+  if (!state) {
     return (
-      <div style={{ ...styles.page, alignItems: "center", justifyContent: "center", display: "flex" }}>
-        <style>{FONTS}</style>
-        <div style={styles.loadingText}>Setting up the room…</div>
-      </div>
+      <>
+        <style>{GLOBAL_CSS}</style>
+        <div style={{ ...s.appShell, alignItems: "center", justifyContent: "center" }}>
+          <span style={{ color: C.mute }}>Loading…</span>
+        </div>
+      </>
     );
   }
 
-  const activeQuestion = questions.find((q) => q.id === activeQuestionId);
-  const meta = { mainQuestion: activeQuestion.mainQuestion, tableQuestion: activeQuestion.tableQuestion };
+  if (view === "present") {
+    return (
+      <>
+        <style>{GLOBAL_CSS}</style>
+        <PresentView
+          question={active}
+          themes={themes}
+          repCommentsForTheme={repCommentsForTheme}
+          onBack={() => setView("work")}
+        />
+      </>
+    );
+  }
 
   return (
-    <QuestionsContext.Provider value={{ questions, activeQuestionId, selectQuestion, addQuestion, autoTriggeredRef }}>
-      <div style={styles.appShell}>
-        <style>{FONTS}</style>
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <MainBoard
-                meta={meta}
-                setMeta={setMeta}
-                tables={activeQuestion.tables}
-                onAddTable={handleAddTable}
+    <>
+      <style>{GLOBAL_CSS}</style>
+      <div style={s.appShell}>
+        <CommentsPanel
+          comments={comments}
+          onUseComment={addCommentTheme}
+          onCopyAll={copyAllComments}
+          sim={sim ? { status: sim.status, speed: sim.speed, elapsed: simElapsed, duration: SIM_WINDOW_MS } : null}
+          simControls={simControls}
+        />
+
+        <main style={s.main}>
+          <div style={s.mainInner}>
+            <div style={s.eyebrow}>CREATE THEMES FOR THIS QUESTION…</div>
+            <div style={s.questionRow}>
+              <h1 style={s.question}>{active.mainQuestion}</h1>
+              <QuestionSwitcher
+                questions={state.questions}
+                activeId={state.activeId}
+                onSelect={(id) => {
+                  setSim(null);
+                  setState((prev) => ({ ...prev, activeId: id }));
+                }}
               />
-            }
+            </div>
+
+            <ThemeComposer onAdd={addManualTheme} />
+
+            <div style={s.listToolbar}>
+              <div style={s.toolbarLeft}>
+                <span style={s.toolLabel}>ALL THEMES</span>
+                <span style={s.countPill}>{themes.length}</span>
+              </div>
+              <div style={s.toolbarRight}>
+                <button style={s.generateBtn} onClick={openGenerate}>
+                  Generate
+                  <Sparkles size={14} color={C.green} />
+                </button>
+                <button style={s.copyBtn} onClick={copyThemes} disabled={themes.length === 0}>
+                  Copy
+                </button>
+                <span style={{ position: "relative", display: "inline-block" }}>
+                  <button style={s.shareBtn} onClick={() => setShareOpen((v) => !v)}>
+                    Share
+                    <Share2 size={13} color="#fff" />
+                  </button>
+                  {shareOpen && (
+                    <ShareMenu
+                      onPresent={() => {
+                        setShareOpen(false);
+                        setView("present");
+                      }}
+                      onReport={downloadReport}
+                      onJson={downloadJson}
+                      onClose={() => setShareOpen(false)}
+                    />
+                  )}
+                </span>
+              </div>
+            </div>
+
+            <div style={s.themeList}>
+              {themes.length === 0 && (
+                <div style={s.listEmpty}>
+                  Write a theme above, click a comment on the left, or hit Generate.
+                </div>
+              )}
+              {themes.map((t) => (
+                <ThemeRow
+                  key={t.id}
+                  theme={t}
+                  onChange={(text) => changeTheme(t.id, text)}
+                  onDelete={() => deleteTheme(t.id)}
+                />
+              ))}
+            </div>
+          </div>
+        </main>
+
+        {showGenerate && (
+          <GenerateModal
+            status={genStatus}
+            error={genError}
+            candidates={candidates}
+            themes={themes}
+            onRefresh={runGenerate}
+            onClearAll={() => setCandidates(() => [])}
+            onAccept={acceptCandidates}
+            onClose={() => setShowGenerate(false)}
           />
-          <Route
-            path="/table/:tableId"
-            element={
-              <TablePage
-                tables={activeQuestion.tables}
-                meta={meta}
-                setMeta={setMeta}
-                onAddAnswer={handleAddAnswer}
-                onRemoveAnswer={handleRemoveAnswer}
-              />
-            }
-          />
-          <Route
-            path="/themes"
-            element={
-              <ThemesPage
-                meta={meta}
-                tables={activeQuestion.tables}
-                themesData={activeQuestion.themesData}
-                setThemesData={setThemesData}
-                promptExtra={activeQuestion.promptExtra}
-                setPromptExtra={setPromptExtra}
-              />
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        )}
+
+        {toast && <div style={s.toast}>{toast}</div>}
       </div>
-    </QuestionsContext.Provider>
+    </>
   );
 }
 
 /* ---------------- styles ---------------- */
 
-const styles = {
+const s = {
   appShell: {
-    minHeight: "100vh",
-    background: INK,
-    fontFamily: "'Inter', sans-serif",
-  },
-  page: {
-    minHeight: "100vh",
-    background: `radial-gradient(ellipse 900px 500px at 50% -10%, ${INK_2} 0%, ${INK} 60%)`,
-    color: CREAM_TEXT,
-    paddingBottom: 64,
-  },
-  topBar: {
     display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "22px 40px",
-    borderBottom: `1px solid rgba(237,231,214,0.1)`,
+    minHeight: "100vh",
+    background: C.bg,
+    color: C.ink,
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
   },
-  topBarBrand: { display: "flex", alignItems: "center", gap: 8 },
-  topBarMark: { color: GOLD, fontSize: 14 },
-  topBarTitle: {
-    fontFamily: "'Fraunces', serif",
-    fontWeight: 600,
-    fontSize: 17,
-    letterSpacing: "0.01em",
-  },
-  topBarNav: { display: "flex", gap: 6, alignItems: "center" },
-  questionSelect: {
-    background: "rgba(237,231,214,0.08)",
-    border: "1px solid rgba(237,231,214,0.18)",
-    color: CREAM_TEXT,
-    fontFamily: "'Inter', sans-serif",
-    fontSize: 12.5,
-    padding: "8px 10px",
-    borderRadius: 999,
-    cursor: "pointer",
-    maxWidth: 220,
-    marginRight: 4,
-  },
-  navBtn: {
-    background: "transparent",
-    border: "1px solid rgba(237,231,214,0.18)",
-    color: "rgba(237,231,214,0.65)",
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11.5,
-    letterSpacing: "0.06em",
-    textTransform: "uppercase",
-    padding: "8px 14px",
-    borderRadius: 999,
-    cursor: "pointer",
-  },
-  navBtnActive: {
-    background: PAPER,
-    color: TEXT_DARK,
-    borderColor: PAPER,
-  },
-  mainHead: { padding: "48px 40px 8px", maxWidth: 900 },
-  eyebrow: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11.5,
-    letterSpacing: "0.14em",
-    color: GOLD,
-    marginBottom: 14,
-  },
-  questionRow: { display: "flex", alignItems: "flex-start", gap: 12 },
-  mainQuestion: {
-    fontFamily: "'Fraunces', serif",
-    fontWeight: 600,
-    fontSize: "clamp(28px, 4vw, 44px)",
-    lineHeight: 1.15,
-    margin: 0,
-    maxWidth: 820,
-  },
-  tableQuestion: {
-    fontFamily: "'Fraunces', serif",
-    fontWeight: 600,
-    fontSize: "clamp(24px, 3.2vw, 34px)",
-    lineHeight: 1.2,
-    margin: 0,
-  },
-  subline: {
-    marginTop: 16,
-    fontSize: 14,
-    color: "rgba(237,231,214,0.5)",
-  },
-  iconBtn: {
-    background: "rgba(237,231,214,0.08)",
-    border: "1px solid rgba(237,231,214,0.18)",
-    color: CREAM_TEXT,
-    width: 34,
-    height: 34,
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    cursor: "pointer",
+
+  /* sidebar */
+  sidebar: {
+    width: 312,
     flexShrink: 0,
-    marginTop: 6,
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-    gap: 20,
-    padding: "36px 40px 8px",
-    maxWidth: 1080,
-  },
-  addTile: {
-    background: BLUE,
-    border: "none",
-    borderRadius: 14,
-    aspectRatio: "1 / 1",
+    borderRight: `1px solid ${C.line}`,
+    height: "100vh",
+    position: "sticky",
+    top: 0,
     display: "flex",
     flexDirection: "column",
+  },
+  sidebarHead: { padding: "24px 20px 14px", borderBottom: `1px solid ${C.line}` },
+  sidebarTitle: { margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" },
+  sidebarSubRow: { display: "flex", alignItems: "center", gap: 14, marginTop: 10 },
+  livePill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    background: C.redSoft,
+    color: C.redX,
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: "0.06em",
+    padding: "3px 8px",
+    borderRadius: 5,
+  },
+  liveDot: { width: 6, height: 6, borderRadius: "50%", background: C.redX, display: "inline-block" },
+  linkBtn: { color: C.blue, fontSize: 12.5, fontWeight: 700 },
+  sidebarScroll: { overflowY: "auto", flex: 1, paddingBottom: 40 },
+  tableHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    width: "100%",
+    textAlign: "left",
+    padding: "14px 20px 10px",
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: "0.1em",
+    color: C.mute,
+    background: C.bg,
+    borderBottom: `1px solid ${C.line}`,
+    position: "sticky",
+    top: 0,
+    zIndex: 2,
+  },
+  moreRow: {
+    width: "100%",
+    textAlign: "left",
+    padding: "9px 20px",
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: C.blue,
+    borderBottom: `1px solid ${C.lineSoft}`,
+  },
+  simTableEmpty: {
+    padding: "8px 20px",
+    fontSize: 11.5,
+    color: C.faint,
+    fontStyle: "italic",
+    borderBottom: `1px solid ${C.lineSoft}`,
+  },
+  viewToggle: {
+    display: "flex",
+    gap: 4,
+    marginTop: 12,
+    padding: 3,
+    background: C.lineSoft,
+    borderRadius: 8,
+  },
+  viewToggleOn: {
+    flex: 1,
+    padding: "5px 8px",
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 700,
+    color: C.ink,
+    background: C.bg,
+    boxShadow: "0 1px 2px rgba(20,23,26,0.12)",
+  },
+  viewToggleOff: {
+    flex: 1,
+    padding: "5px 8px",
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 600,
+    color: C.mute,
+  },
+  simFooter: { padding: "12px 16px", borderTop: `1px solid ${C.line}` },
+  simTrigger: {
+    display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    cursor: "pointer",
-    boxShadow: "0 8px 22px rgba(92,138,156,0.35)",
-    transition: "transform 0.15s ease",
+    gap: 7,
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#fff",
+    background: C.redX,
   },
-  addTilePlus: {
+  simBar: {
+    position: "relative",
+    padding: "14px 16px",
+    background: C.redX,
+    color: "#fff",
+    boxShadow: "0 -8px 20px rgba(20,23,26,0.12)",
+  },
+  simEdgeTrack: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 5,
+    background: "rgba(255,255,255,0.28)",
+  },
+  simEdgeFill: { height: "100%", background: "#fff", transition: "width 0.4s linear" },
+  simBarTop: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  simBarLabel: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    color: "#fff",
+  },
+  simClock: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "rgba(255,255,255,0.85)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  simBtnRow: { display: "flex", gap: 6 },
+  simBtn: {
+    flex: 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    padding: "7px 6px",
+    borderRadius: 7,
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: "#fff",
+    background: "rgba(255,255,255,0.16)",
+    border: `1px solid rgba(255,255,255,0.4)`,
+  },
+  simBtnOn: { background: "#fff", color: C.redX, borderColor: "#fff" },
+  commentRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    width: "100%",
+    textAlign: "left",
+    padding: "10px 34px 10px 20px",
+    borderBottom: `1px solid ${C.lineSoft}`,
+    position: "relative",
+  },
+  commentBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    background: C.blue,
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: 800,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginTop: 1,
+  },
+  commentText: {
+    fontSize: 13,
+    color: C.body,
+    lineHeight: 1.4,
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
+  },
+  commentArrow: { position: "absolute", right: 12, top: 13, transition: "opacity 0.12s" },
+
+  /* main */
+  main: { flex: 1, minWidth: 0, display: "flex", justifyContent: "center" },
+  mainInner: { width: "100%", maxWidth: 860, padding: "52px 48px 80px" },
+  eyebrow: { fontSize: 11, fontWeight: 800, letterSpacing: "0.09em", color: C.faint, marginBottom: 10 },
+  questionRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 26 },
+  question: { margin: 0, fontSize: 30, fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1.15 },
+  qTriangle: { display: "inline-flex", padding: 4, borderRadius: 6 },
+
+  /* composer */
+  composer: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    border: `1px solid ${C.line}`,
+    borderRadius: 14,
+    padding: "10px 10px 10px 20px",
+    boxShadow: "0 1px 2px rgba(20,23,26,0.04)",
+  },
+  composerInput: { flex: 1, border: "none", outline: "none", fontSize: 16, color: C.ink, background: "transparent", padding: "8px 0" },
+  arrowBtn: {
     width: 40,
     height: 40,
     borderRadius: "50%",
-    background: BLUE_DEEP,
-    color: PAPER,
-    display: "flex",
+    background: C.blue,
+    display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
-  addTileLabel: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 12,
-    fontWeight: 600,
-    color: "#233A42",
-    letterSpacing: "0.03em",
-  },
-  tableTile: {
-    position: "relative",
-    background: PAPER,
-    border: "none",
-    borderRadius: 14,
-    aspectRatio: "1 / 1",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    cursor: "pointer",
-    boxShadow: "0 8px 20px rgba(0,0,0,0.28)",
-    overflow: "hidden",
-  },
-  tileTent: {
-    position: "absolute",
-    top: 0,
-    left: "50%",
-    transform: "translateX(-50%)",
-    width: "46%",
-    height: 8,
-    background: PAPER_DIM,
-    borderBottomLeftRadius: 8,
-    borderBottomRightRadius: 8,
-  },
-  tileNumber: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11,
-    color: TEXT_MUTE,
-    letterSpacing: "0.08em",
-  },
-  tileName: {
-    fontFamily: "'Fraunces', serif",
-    fontWeight: 600,
-    fontSize: 19,
-    color: TEXT_DARK,
-  },
-  tileCount: {
-    fontSize: 12,
-    color: TEXT_MUTE,
-  },
-  themesCTA: {
-    margin: "40px 40px 0",
-    maxWidth: 1000,
+
+  /* list toolbar */
+  listToolbar: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 24,
-    background: "rgba(237,231,214,0.06)",
-    border: "1px solid rgba(237,231,214,0.12)",
-    borderRadius: 16,
-    padding: "26px 30px",
+    gap: 12,
+    margin: "26px 0 4px",
     flexWrap: "wrap",
   },
-  themesCTAEyebrow: {
-    fontFamily: "'IBM Plex Mono', monospace",
+  toolbarLeft: { display: "flex", alignItems: "center", gap: 8 },
+  toolbarRight: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  toolLabel: { fontSize: 11, fontWeight: 800, letterSpacing: "0.09em", color: C.mute },
+  countPill: {
+    background: C.blue,
+    color: "#fff",
     fontSize: 11,
-    letterSpacing: "0.1em",
-    color: "rgba(237,231,214,0.45)",
-    marginBottom: 6,
-  },
-  themesCTATitle: {
-    fontFamily: "'Fraunces', serif",
-    fontSize: 22,
-    fontWeight: 600,
-  },
-  themesCTASub: {
-    fontSize: 13.5,
-    color: "rgba(237,231,214,0.55)",
-    marginTop: 4,
-  },
-  btnPrimary: {
-    background: BLUE_DEEP,
-    color: "#fff",
-    border: "none",
-    borderRadius: 10,
-    padding: "12px 22px",
-    fontSize: 14,
-    fontWeight: 600,
-    fontFamily: "'Inter', sans-serif",
-    cursor: "pointer",
-  },
-  btnGold: {
-    background: GOLD,
-    color: "#241B08",
-    border: "none",
+    fontWeight: 800,
+    padding: "2px 8px",
     borderRadius: 999,
-    padding: "14px 26px",
-    fontSize: 14,
-    fontWeight: 700,
-    fontFamily: "'Inter', sans-serif",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    flexShrink: 0,
-  },
-  btnGoldSmall: {
-    background: GOLD,
-    color: "#241B08",
-    border: "none",
-    borderRadius: 999,
-    padding: "9px 16px",
-    fontSize: 12.5,
-    fontWeight: 700,
-    fontFamily: "'Inter', sans-serif",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-  },
-  btnGhost: {
-    background: "transparent",
-    border: `1px solid ${TEXT_MUTE}`,
-    color: TEXT_DARK,
-    borderRadius: 10,
-    padding: "12px 20px",
-    fontSize: 14,
-    cursor: "pointer",
-  },
-  btnGhostDark: {
-    background: "transparent",
-    border: "1px solid rgba(237,231,214,0.25)",
-    color: "rgba(237,231,214,0.8)",
-    borderRadius: 999,
-    padding: "9px 16px",
-    fontSize: 12.5,
-    fontWeight: 600,
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    fontFamily: "'Inter', sans-serif",
-  },
-  btnDark: {
-    background: PAPER,
-    color: TEXT_DARK,
-    border: "none",
-    borderRadius: 999,
-    padding: "13px 34px",
-    fontSize: 14,
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  tableHeadWrap: { padding: "40px 40px 8px", maxWidth: 800 },
-  backLink: {
-    background: "transparent",
-    border: "none",
-    color: "rgba(237,231,214,0.55)",
-    fontSize: 13,
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    padding: 0,
-    marginBottom: 24,
-  },
-  composerCard: {
-    margin: "32px 40px 0",
-    maxWidth: 720,
-    background: PAPER,
-    borderRadius: 16,
-    padding: 20,
-    display: "flex",
-    gap: 14,
-    alignItems: "flex-end",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
-  },
-  composerTextarea: {
-    flex: 1,
-    border: "none",
-    background: "transparent",
-    resize: "none",
-    fontSize: 15,
-    fontFamily: "'Inter', sans-serif",
-    color: TEXT_DARK,
-    outline: "none",
-    lineHeight: 1.4,
-  },
-  answersSection: { margin: "36px 40px 0", maxWidth: 720 },
-  answersSubhead: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11.5,
-    letterSpacing: "0.12em",
-    color: "rgba(237,231,214,0.5)",
-    marginBottom: 14,
-  },
-  emptyNote: { fontSize: 13.5, color: "rgba(237,231,214,0.4)", fontStyle: "italic" },
-  answersList: { display: "flex", flexDirection: "column", gap: 10 },
-  answerRow: {
-    position: "relative",
-    background: "rgba(237,231,214,0.06)",
-    border: "1px solid rgba(237,231,214,0.1)",
-    borderRadius: 10,
-    padding: "13px 44px 13px 16px",
-    fontSize: 14.5,
-  },
-  answerText: { color: "rgba(237,231,214,0.92)" },
-  answerRemove: {
-    position: "absolute",
-    right: 10,
-    top: "50%",
-    transform: "translateY(-50%)",
-    background: RUST,
-    color: "#fff",
-    border: "none",
-    width: 24,
-    height: 24,
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    cursor: "pointer",
-  },
-  endRow: { margin: "40px 40px 0", maxWidth: 720, display: "flex", justifyContent: "flex-end" },
-  loadingCard: {
-    margin: "40px 40px 0",
-    maxWidth: 720,
-    display: "flex",
-    alignItems: "center",
-    gap: 16,
-  },
-  spinner: {
-    width: 22,
-    height: 22,
-    borderRadius: "50%",
-    border: `3px solid rgba(237,231,214,0.2)`,
-    borderTopColor: GOLD,
-    animation: "spin 0.8s linear infinite",
-  },
-  loadingText: { fontSize: 14, color: "rgba(237,231,214,0.6)" },
-  errorCard: {
-    margin: "40px 40px 0",
-    maxWidth: 620,
-    background: "rgba(181,86,58,0.12)",
-    border: `1px solid rgba(181,86,58,0.4)`,
-    borderRadius: 14,
-    padding: 24,
-    display: "flex",
-    flexDirection: "column",
-    gap: 14,
-    alignItems: "flex-start",
-  },
-  errorText: { fontSize: 14, color: "rgba(237,231,214,0.85)" },
-  themesToolbar: {
-    display: "flex",
-    gap: 12,
-    padding: "28px 40px 0",
-    alignItems: "center",
-  },
-  addThemeForm: { display: "flex", gap: 8, alignItems: "center" },
-  confirmClearBox: {
-    display: "flex",
-    gap: 10,
-    alignItems: "center",
-    background: "rgba(181,86,58,0.12)",
-    border: "1px solid rgba(181,86,58,0.4)",
-    borderRadius: 999,
-    padding: "6px 8px 6px 14px",
-  },
-  confirmClearText: { fontSize: 12.5, color: "rgba(237,231,214,0.85)" },
-  btnRustSmall: {
-    background: RUST,
-    color: "#fff",
-    border: "none",
-    borderRadius: 999,
-    padding: "7px 14px",
-    fontSize: 12.5,
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  addThemeInput: {
-    background: "rgba(237,231,214,0.1)",
-    border: "1px solid rgba(237,231,214,0.25)",
-    borderRadius: 999,
-    padding: "8px 14px",
-    color: CREAM_TEXT,
-    fontSize: 13,
-    outline: "none",
-    width: 180,
-  },
-  iconBtnGold: {
-    background: GOLD,
-    border: "none",
-    color: "#241B08",
-    width: 30,
-    height: 30,
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    cursor: "pointer",
-  },
-  iconBtnGhost: {
-    background: "transparent",
-    border: "1px solid rgba(237,231,214,0.25)",
-    color: CREAM_TEXT,
-    width: 30,
-    height: 30,
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    cursor: "pointer",
-  },
-  themeColumns: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: 18,
-    padding: "20px 40px 40px",
-  },
-  themeColumn: {
-    background: "rgba(237,231,214,0.05)",
-    border: "1px solid rgba(237,231,214,0.12)",
-    borderRadius: 14,
-    minWidth: 260,
-    maxWidth: 260,
-    flexShrink: 0,
-    padding: 14,
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
-  themeColumnOver: {
-    borderColor: GOLD,
-    background: "rgba(200,149,46,0.08)",
-  },
-  themeColumnHead: {
-    display: "flex",
-    alignItems: "baseline",
-    justifyContent: "space-between",
-    gap: 8,
-    paddingBottom: 10,
-    borderBottom: "1px solid rgba(237,231,214,0.12)",
-  },
-  themeNameRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-    minWidth: 0,
-  },
-  themeName: {
-    fontFamily: "'Fraunces', serif",
-    fontWeight: 600,
-    fontSize: 15.5,
-    lineHeight: 1.25,
-  },
-  themeEditBtn: {
-    background: "transparent",
-    border: "none",
-    color: "rgba(237,231,214,0.45)",
-    padding: 2,
-    display: "flex",
-    alignItems: "center",
-    flexShrink: 0,
-    cursor: "pointer",
-  },
-  themeCount: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11,
-    color: "rgba(237,231,214,0.4)",
-  },
-  themeCards: { display: "flex", flexDirection: "column", gap: 8, minHeight: 40 },
-  themeAnswerCard: {
-    background: PAPER,
-    borderRadius: 10,
-    padding: "10px 12px",
-    display: "flex",
-    gap: 8,
-    alignItems: "flex-start",
-    cursor: "grab",
-    boxShadow: "0 4px 10px rgba(0,0,0,0.18)",
-  },
-  themeAnswerText: { fontSize: 13, color: TEXT_DARK, lineHeight: 1.35 },
-  themeAnswerSource: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 10,
-    color: TEXT_MUTE,
-    marginTop: 4,
-    letterSpacing: "0.04em",
-  },
-  themeEmptySlot: {
-    fontSize: 12,
-    color: "rgba(237,231,214,0.3)",
-    fontStyle: "italic",
-    border: "1px dashed rgba(237,231,214,0.15)",
-    borderRadius: 8,
-    padding: "16px 10px",
+    minWidth: 22,
     textAlign: "center",
   },
+  generateBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    background: C.greenSoft,
+    color: C.green,
+    fontWeight: 700,
+    fontSize: 13,
+    padding: "8px 14px",
+    borderRadius: 999,
+  },
+  copyBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    background: C.blueSoft,
+    color: C.blue,
+    fontWeight: 700,
+    fontSize: 13,
+    padding: "8px 14px",
+    borderRadius: 999,
+  },
+  shareBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    background: C.blue,
+    color: "#fff",
+    fontWeight: 700,
+    fontSize: 13,
+    padding: "8px 14px",
+    borderRadius: 999,
+  },
+
+  /* theme list */
+  themeList: { marginTop: 8 },
+  listEmpty: { padding: "40px 0", color: C.faint, fontSize: 14 },
+  themeRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 14,
+    padding: "18px 40px 18px 0",
+    borderBottom: `1px solid ${C.line}`,
+    position: "relative",
+  },
+  themeText: {
+    flex: 1,
+    textAlign: "left",
+    fontSize: 17,
+    fontWeight: 700,
+    color: C.ink,
+    letterSpacing: "-0.01em",
+    lineHeight: 1.3,
+    transition: "color 0.12s",
+  },
+  themeEditInput: {
+    flex: 1,
+    border: `1px solid ${C.blue}`,
+    borderRadius: 8,
+    outline: "none",
+    fontSize: 17,
+    fontWeight: 700,
+    color: C.ink,
+    padding: "6px 10px",
+  },
+  themeDelete: {
+    position: "absolute",
+    right: 4,
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: 26,
+    height: 26,
+    borderRadius: "50%",
+    background: C.redSoft,
+    color: C.redX,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "opacity 0.12s, background 0.12s, color 0.12s",
+  },
+
+  /* share menu */
+  popScrim: { position: "fixed", inset: 0, zIndex: 40 },
+  shareMenu: {
+    position: "absolute",
+    right: 0,
+    top: "calc(100% + 8px)",
+    zIndex: 41,
+    background: C.bg,
+    border: `1px solid ${C.line}`,
+    borderRadius: 12,
+    boxShadow: "0 12px 32px rgba(20,23,26,0.14)",
+    padding: 6,
+    minWidth: 190,
+  },
+  shareItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    width: "100%",
+    textAlign: "left",
+    padding: "9px 12px",
+    borderRadius: 8,
+    fontSize: 13.5,
+    fontWeight: 600,
+    color: C.body,
+  },
+
+  /* question menu */
+  qMenu: {
+    position: "absolute",
+    left: 0,
+    top: "calc(100% + 8px)",
+    zIndex: 41,
+    background: C.bg,
+    border: `1px solid ${C.line}`,
+    borderRadius: 12,
+    boxShadow: "0 12px 32px rgba(20,23,26,0.14)",
+    padding: 6,
+    width: 380,
+  },
+  qMenuItem: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 3,
+    width: "100%",
+    textAlign: "left",
+    padding: "10px 12px",
+    borderRadius: 8,
+    color: C.body,
+  },
+  qMenuLabel: { fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", color: C.mute },
+  qMenuText: { fontSize: 13, lineHeight: 1.35 },
+
+  /* modal */
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(30,36,31,0.7)",
+    background: "rgba(20,23,26,0.32)",
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "center",
-    zIndex: 50,
-    padding: 20,
+    padding: "60px 20px",
+    zIndex: 60,
   },
   modal: {
-    background: PAPER,
+    background: C.bg,
     borderRadius: 18,
-    padding: 28,
+    padding: 30,
     width: "100%",
-    maxWidth: 480,
-    boxShadow: "0 30px 60px rgba(0,0,0,0.4)",
-  },
-  promptModal: {
-    background: PAPER,
-    borderRadius: 18,
-    padding: 28,
-    width: "100%",
-    maxWidth: 640,
-    maxHeight: "85vh",
-    overflowY: "auto",
-    boxShadow: "0 30px 60px rgba(0,0,0,0.4)",
-    boxSizing: "border-box",
-  },
-  promptLabel: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11,
-    letterSpacing: "0.08em",
-    color: TEXT_MUTE,
-    marginBottom: 8,
-    marginTop: 18,
-  },
-  promptPre: {
-    background: PAPER_DIM,
-    border: `1px solid ${PAPER_DIM}`,
-    borderRadius: 10,
-    padding: "14px 16px",
-    margin: 0,
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 12,
-    lineHeight: 1.55,
-    color: TEXT_DARK,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    maxHeight: 260,
-    overflowY: "auto",
-    boxSizing: "border-box",
-  },
-  modalEyebrow: {
-    fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11,
-    letterSpacing: "0.1em",
-    color: BLUE_DEEP,
-    marginBottom: 6,
-  },
-  modalTitle: {
-    fontFamily: "'Fraunces', serif",
-    fontWeight: 600,
-    fontSize: 20,
-    color: TEXT_DARK,
-    marginBottom: 18,
-  },
-  modalInput: {
-    width: "100%",
-    border: `1px solid ${PAPER_DIM}`,
-    borderRadius: 10,
-    padding: "12px 14px",
-    fontSize: 15,
-    fontFamily: "'Inter', sans-serif",
-    outline: "none",
-    boxSizing: "border-box",
-  },
-  modalTextarea: {
-    width: "100%",
-    border: `1px solid ${PAPER_DIM}`,
-    borderRadius: 10,
-    padding: "12px 14px",
-    fontSize: 15,
-    fontFamily: "'Inter', sans-serif",
-    outline: "none",
-    resize: "vertical",
-    boxSizing: "border-box",
-  },
-  modalActions: {
+    maxWidth: 680,
+    maxHeight: "82vh",
     display: "flex",
-    justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 20,
+    flexDirection: "column",
+    boxShadow: "0 30px 70px rgba(20,23,26,0.3)",
+  },
+  modalTitle: { margin: "6px 0 20px", fontSize: 24, fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1.2 },
+  modalToolbar: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingBottom: 14,
+    borderBottom: `1px solid ${C.line}`,
+    flexWrap: "wrap",
+  },
+  ghostBtn: { color: C.mute, fontSize: 12.5, fontWeight: 700, padding: "7px 10px" },
+  softGreenBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    background: C.greenSoft,
+    color: C.green,
+    fontSize: 12.5,
+    fontWeight: 700,
+    padding: "7px 14px",
+    borderRadius: 999,
+  },
+  greenBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    background: C.green,
+    color: "#fff",
+    fontSize: 12.5,
+    fontWeight: 700,
+    padding: "7px 16px",
+    borderRadius: 999,
+  },
+  candidateList: { overflowY: "auto", marginTop: 4, flex: 1 },
+  modalStateBox: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 14,
+    padding: "34px 4px",
+    color: C.mute,
+    fontSize: 13.5,
+  },
+  candidateRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: "16px 4px",
+    borderBottom: `1px solid ${C.line}`,
+  },
+  candidateText: { fontSize: 15.5, fontWeight: 700, color: C.ink, lineHeight: 1.3, letterSpacing: "-0.01em" },
+  similarNote: { display: "flex", alignItems: "center", gap: 5, marginTop: 5, fontSize: 12, color: C.body },
+  checkOn: {
+    width: 24,
+    height: 24,
+    borderRadius: "50%",
+    background: C.green,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginTop: 2,
+  },
+  checkOff: {
+    width: 24,
+    height: 24,
+    borderRadius: "50%",
+    border: `2px solid ${C.line}`,
+    flexShrink: 0,
+    marginTop: 2,
+  },
+
+  /* present */
+  presentWrap: {
+    minHeight: "100vh",
+    background: C.bg,
+    color: C.ink,
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+    display: "flex",
+    justifyContent: "center",
+  },
+  presentInner: { width: "80%", maxWidth: 1200, padding: "52px 0 100px" },
+  backBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    color: C.mute,
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    marginBottom: 22,
+  },
+  presentTitle: { margin: 0, fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.1 },
+  presentCount: {
+    marginTop: 10,
+    fontSize: 12.5,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: C.faint,
+  },
+  presentList: { marginTop: 28, borderTop: `1px solid ${C.line}` },
+  presentEmpty: { padding: "40px 0", color: C.faint },
+  presentRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 20,
+    padding: "26px 0",
+    borderBottom: `1px solid ${C.line}`,
+  },
+  presentNum: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    background: C.lineSoft,
+    color: C.mute,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 16,
+    fontWeight: 800,
+    flexShrink: 0,
+    marginTop: 8,
+  },
+  presentThemeText: {
+    fontSize: 40,
+    fontWeight: 500,
+    letterSpacing: "-0.02em",
+    lineHeight: 1.15,
+    transition: "color 0.12s",
+  },
+  presentQuote: {
+    marginTop: 12,
+    fontSize: 17,
+    fontStyle: "italic",
+    color: C.mute,
+    lineHeight: 1.45,
+  },
+
+  /* toast */
+  toast: {
+    position: "fixed",
+    bottom: 24,
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: C.ink,
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: 600,
+    padding: "10px 18px",
+    borderRadius: 999,
+    zIndex: 80,
+    boxShadow: "0 10px 30px rgba(20,23,26,0.25)",
   },
 };

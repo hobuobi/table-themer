@@ -12,13 +12,26 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { mainQuestion, answers, extraInstructions } = req.body || {};
-  if (!mainQuestion || !Array.isArray(answers) || answers.length === 0) {
-    res.status(400).json({ error: "mainQuestion and a non-empty answers array are required" });
+  const {
+    mainQuestion,
+    comments,
+    existingThemes = [],
+    previousCandidates = [],
+  } = req.body || {};
+
+  if (!mainQuestion || !Array.isArray(comments) || comments.length === 0) {
+    res
+      .status(400)
+      .json({ error: "mainQuestion and a non-empty comments array are required" });
     return;
   }
 
-  const prompt = buildThemePrompt({ mainQuestion, answers, extraInstructions });
+  const prompt = buildThemePrompt({
+    mainQuestion,
+    comments,
+    existingThemes,
+    previousCandidates,
+  });
 
   try {
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -30,7 +43,9 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
-        max_tokens: Math.min(16000, Math.max(1024, answers.length * 60)),
+        // Output no longer scales with the dataset (themes only carry a
+        // handful of representative ids), so a flat ceiling is plenty.
+        max_tokens: 8000,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -43,25 +58,57 @@ export default async function handler(req, res) {
     }
 
     const data = await anthropicRes.json();
-    if (data.stop_reason === "max_tokens") {
+    const truncated = data.stop_reason === "max_tokens";
+    if (truncated) {
       console.error("generate-themes: response truncated at max_tokens", {
-        answerCount: answers.length,
+        commentCount: comments.length,
         usage: data.usage,
       });
-      res.status(502).json({ error: "The model's response was too long and got cut off. Try again." });
-      return;
     }
 
     const textBlocks = (data.content || [])
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("\n");
-    const cleaned = textBlocks.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
+
+    const parsed = parseThemes(textBlocks);
+    if (!parsed || !Array.isArray(parsed.themes) || parsed.themes.length === 0) {
+      res.status(502).json({
+        error: truncated
+          ? "The model's response was cut off before any themes came back. Try again."
+          : "The model did not return any themes. Try again.",
+      });
+      return;
+    }
 
     res.status(200).json(parsed);
   } catch (e) {
     console.error("generate-themes failed", e);
     res.status(500).json({ error: "Failed to generate themes" });
+  }
+}
+
+// Parse the model's JSON; if it was truncated mid-array, salvage every
+// complete { ... } theme object that made it through.
+function parseThemes(text) {
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    const start = cleaned.indexOf('"themes"');
+    if (start === -1) throw e;
+    const objs = [];
+    const re = /\{[^{}]*\}/g;
+    let m;
+    while ((m = re.exec(cleaned.slice(start)))) {
+      try {
+        const o = JSON.parse(m[0]);
+        if (o && typeof o.text === "string") objs.push(o);
+      } catch (_) {
+        /* skip fragment */
+      }
+    }
+    if (!objs.length) throw e;
+    return { themes: objs };
   }
 }
