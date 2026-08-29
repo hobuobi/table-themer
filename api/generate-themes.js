@@ -12,13 +12,26 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { mainQuestion, answers, extraInstructions } = req.body || {};
-  if (!mainQuestion || !Array.isArray(answers) || answers.length === 0) {
-    res.status(400).json({ error: "mainQuestion and a non-empty answers array are required" });
+  const {
+    mainQuestion,
+    comments,
+    existingThemes = [],
+    previousCandidates = [],
+  } = req.body || {};
+
+  if (!mainQuestion || !Array.isArray(comments) || comments.length === 0) {
+    res
+      .status(400)
+      .json({ error: "mainQuestion and a non-empty comments array are required" });
     return;
   }
 
-  const prompt = buildThemePrompt({ mainQuestion, answers, extraInstructions });
+  const prompt = buildThemePrompt({
+    mainQuestion,
+    comments,
+    existingThemes,
+    previousCandidates,
+  });
 
   try {
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -30,7 +43,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
-        max_tokens: Math.min(16000, Math.max(1024, answers.length * 60)),
+        max_tokens: Math.min(24000, Math.max(2000, comments.length * 80)),
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -45,10 +58,12 @@ export default async function handler(req, res) {
     const data = await anthropicRes.json();
     if (data.stop_reason === "max_tokens") {
       console.error("generate-themes: response truncated at max_tokens", {
-        answerCount: answers.length,
+        commentCount: comments.length,
         usage: data.usage,
       });
-      res.status(502).json({ error: "The model's response was too long and got cut off. Try again." });
+      res
+        .status(502)
+        .json({ error: "The model's response was too long and got cut off. Try again." });
       return;
     }
 
