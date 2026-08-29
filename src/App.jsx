@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback, useReducer } from "react";
 import {
   Sparkles,
   ArrowRight,
@@ -7,14 +7,16 @@ import {
   Check,
   RotateCw,
   ChevronDown,
-  Copy,
   Share2,
   Presentation,
   FileText,
   Braces,
   CornerDownRight,
+  Play,
+  Pause,
+  Square,
 } from "lucide-react";
-import { buildSeedState } from "./seedData.js";
+import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
 
 /* ---------------------------------------------------------------
@@ -51,6 +53,11 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 input, textarea { font: inherit; }
 ::selection { background: ${C.blueSoft}; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes ttFlash {
+  0% { background-color: #FFFFFF; }
+  9% { background-color: #D6DBF1; }
+  100% { background-color: #FFFFFF; }
+}
 .tt-hover { opacity: 0 !important; pointer-events: none; }
 .tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
 .tt-comment:hover { background: ${C.lineSoft}; }
@@ -62,20 +69,44 @@ const STORAGE_KEY = "tt:v2";
 /* ---------------- persistence ---------------- */
 
 function loadState() {
+  const seed = buildSeedState();
+
+  let parsed = null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) parsed = JSON.parse(raw);
   } catch (e) {
     /* fall through to seed */
   }
-  const { questions, comments } = buildSeedState();
-  const themes = {};
-  const candidates = {};
-  questions.forEach((q) => {
-    themes[q.id] = [];
-    candidates[q.id] = [];
+
+  if (!parsed) {
+    const themes = {};
+    const candidates = {};
+    seed.questions.forEach((q) => {
+      themes[q.id] = [];
+      candidates[q.id] = [];
+    });
+    return {
+      questions: seed.questions,
+      activeId: seed.questions[0].id,
+      comments: seed.comments,
+      themes,
+      candidates,
+    };
+  }
+
+  // Backfill simOffset onto comments persisted before the simulator existed.
+  const offsetById = new Map();
+  Object.values(seed.comments)
+    .flat()
+    .forEach((c) => offsetById.set(c.id, c.simOffset));
+  Object.keys(parsed.comments || {}).forEach((qid) => {
+    parsed.comments[qid] = parsed.comments[qid].map((c) => ({
+      ...c,
+      simOffset: c.simOffset ?? offsetById.get(c.id) ?? 0,
+    }));
   });
-  return { questions, activeId: questions[0].id, comments, themes, candidates };
+  return parsed;
 }
 
 function saveState(state) {
@@ -170,7 +201,42 @@ function Spinner({ size = 18 }) {
 
 /* ---------------- comments panel ---------------- */
 
-function CommentsPanel({ comments, onUseComment, onCopyAll }) {
+const COLLAPSED_COUNT = 2;
+
+function fmtClock(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function CommentItem({ c, onUseComment }) {
+  return (
+    <button
+      className="tt-comment tt-row"
+      style={s.commentRow}
+      onClick={() => onUseComment(c)}
+      title="Add as a theme"
+    >
+      <span style={s.commentBadge}>T{c.tableNum}</span>
+      <span style={s.commentText}>{c.text}</span>
+      <ArrowRight
+        className="tt-hover"
+        size={15}
+        color={C.faint}
+        style={{ ...s.commentArrow, opacity: 0 }}
+      />
+    </button>
+  );
+}
+
+function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) {
+  const simActive = !!sim;
+  const done = simActive && sim.elapsed >= sim.duration;
+  const revealed = simActive
+    ? comments.filter((c) => (c.simOffset ?? 0) <= sim.elapsed)
+    : comments;
+
   const groups = useMemo(() => {
     const map = new Map();
     comments.forEach((c) => {
@@ -179,6 +245,33 @@ function CommentsPanel({ comments, onUseComment, onCopyAll }) {
     });
     return [...map.values()].sort((a, b) => a.num - b.num);
   }, [comments]);
+
+  // Newest first — a live feed reads top-down.
+  const chrono = useMemo(
+    () => [...revealed].sort((a, b) => (b.simOffset ?? 0) - (a.simOffset ?? 0)),
+    [revealed]
+  );
+
+  const [mode, setMode] = useState("grouped"); // "grouped" | "chrono"
+  const [expandedNum, setExpandedNum] = useState(null); // one table open at a time; null = all collapsed
+
+  const revealedCount = (g) =>
+    simActive ? g.items.filter((c) => (c.simOffset ?? 0) <= sim.elapsed).length : g.items.length;
+
+  // Flash a table header blue when a comment lands in it (sim / live only).
+  const prevCounts = useRef({});
+  const [flashAt, setFlashAt] = useState({});
+  useEffect(() => {
+    const prev = prevCounts.current;
+    const hits = {};
+    groups.forEach((g) => {
+      const count = revealedCount(g);
+      if (simActive && prev[g.num] != null && count > prev[g.num]) hits[g.num] = Date.now();
+      prev[g.num] = count;
+    });
+    if (Object.keys(hits).length) setFlashAt((f) => ({ ...f, ...hits }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comments, simActive, sim ? sim.elapsed : null]);
 
   return (
     <aside style={s.sidebar}>
@@ -193,33 +286,126 @@ function CommentsPanel({ comments, onUseComment, onCopyAll }) {
             Copy All
           </button>
         </div>
+        <div style={s.viewToggle}>
+          <button
+            style={mode === "grouped" ? s.viewToggleOn : s.viewToggleOff}
+            onClick={() => setMode("grouped")}
+          >
+            By table
+          </button>
+          <button
+            style={mode === "chrono" ? s.viewToggleOn : s.viewToggleOff}
+            onClick={() => setMode("chrono")}
+          >
+            Chronological
+          </button>
+        </div>
       </div>
 
       <div style={s.sidebarScroll}>
-        {groups.map((g) => (
-          <div key={g.num}>
-            <div style={s.tableHeader}>TABLE {g.num}</div>
-            {g.items.map((c) => (
-              <button
-                key={c.id}
-                className="tt-comment tt-row"
-                style={s.commentRow}
-                onClick={() => onUseComment(c)}
-                title="Add as a theme"
-              >
-                <span style={s.commentBadge}>T{g.num}</span>
-                <span style={s.commentText}>{c.text}</span>
-                <ArrowRight
-                  className="tt-hover"
-                  size={15}
-                  color={C.faint}
-                  style={{ ...s.commentArrow, opacity: 0 }}
-                />
-              </button>
-            ))}
-          </div>
-        ))}
+        {mode === "chrono" &&
+          (chrono.length === 0 ? (
+            <div style={s.simTableEmpty}>No comments yet</div>
+          ) : (
+            chrono.map((c) => <CommentItem key={c.id} c={c} onUseComment={onUseComment} />)
+          ))}
+
+        {mode === "grouped" &&
+          groups.map((g) => {
+            const expanded = expandedNum === g.num;
+            const gRevealed = simActive
+              ? g.items.filter((c) => (c.simOffset ?? 0) <= sim.elapsed)
+              : g.items;
+            const shown = expanded ? gRevealed : gRevealed.slice(-COLLAPSED_COUNT);
+            const hidden = gRevealed.length - shown.length;
+            return (
+              <div key={g.num}>
+                <button
+                  key={flashAt[g.num] || "h"}
+                  style={{
+                    ...s.tableHeader,
+                    ...(flashAt[g.num] ? { animation: "ttFlash 1.8s ease-out" } : {}),
+                  }}
+                  onClick={() => setExpandedNum(expanded ? null : g.num)}
+                >
+                  <ChevronDown
+                    size={13}
+                    color={C.faint}
+                    style={{
+                      transform: expanded ? "none" : "rotate(-90deg)",
+                      transition: "transform 0.12s",
+                      flexShrink: 0,
+                    }}
+                  />
+                  TABLE {g.num} ({g.items.length})
+                </button>
+                {simActive && gRevealed.length === 0 && (
+                  <div style={s.simTableEmpty}>No comments yet</div>
+                )}
+                {hidden > 0 && (
+                  <button style={s.moreRow} onClick={() => setExpandedNum(g.num)}>
+                    Show {hidden} more
+                  </button>
+                )}
+                {shown.map((c) => (
+                  <CommentItem key={c.id} c={c} onUseComment={onUseComment} />
+                ))}
+              </div>
+            );
+          })}
       </div>
+
+      {simActive ? (
+        <div style={s.simBar}>
+          <div style={s.simEdgeTrack}>
+            <div
+              style={{
+                ...s.simEdgeFill,
+                width: `${Math.min(100, (sim.elapsed / sim.duration) * 100)}%`,
+              }}
+            />
+          </div>
+          <div style={s.simBarTop}>
+            <span style={s.simBarLabel}>
+              <span style={{ ...s.liveDot, background: "#fff" }} />
+              {done ? "COMPLETE" : sim.status === "paused" ? "PAUSED" : "SIMULATING"}
+            </span>
+            <span style={s.simClock}>
+              {fmtClock(Math.min(sim.elapsed, sim.duration))} / {fmtClock(sim.duration)}
+            </span>
+          </div>
+          <div style={s.simBtnRow}>
+            {sim.status === "running" && !done ? (
+              <button style={s.simBtn} onClick={simControls.pause}>
+                <Pause size={12} fill="currentColor" />
+                Pause
+              </button>
+            ) : (
+              <button style={s.simBtn} onClick={done ? simControls.start : simControls.resume}>
+                <Play size={12} fill="currentColor" />
+                {done ? "Restart" : "Start"}
+              </button>
+            )}
+            <button style={s.simBtn} onClick={simControls.stop}>
+              <Square size={11} fill="currentColor" />
+              Stop
+            </button>
+            <button
+              style={{ ...s.simBtn, ...(sim.speed === 2 ? s.simBtnOn : {}) }}
+              onClick={() => simControls.setSpeed(sim.speed === 2 ? 1 : 2)}
+            >
+              2×
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={s.simFooter}>
+          <button style={s.simTrigger} onClick={simControls.start}>
+            <Play size={11} fill="currentColor" />
+            Simulate incoming comments
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
@@ -547,6 +733,10 @@ export default function App() {
   const [genError, setGenError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [toast, setToast] = useState("");
+  // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
+  // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
+  const [sim, setSim] = useState(null);
+  const [, tick] = useReducer((n) => n + 1, 0);
 
   useEffect(() => {
     setState(loadState());
@@ -554,6 +744,46 @@ export default function App() {
   useEffect(() => {
     if (state) saveState(state);
   }, [state]);
+
+  const simElapsed = !sim
+    ? 0
+    : sim.status === "running"
+    ? sim.anchorElapsed + (Date.now() - sim.anchorTime) * sim.speed
+    : sim.anchorElapsed;
+  const simRunning = !!sim && sim.status === "running" && simElapsed < SIM_WINDOW_MS;
+
+  useEffect(() => {
+    if (!simRunning) return;
+    const id = setInterval(tick, 400);
+    return () => clearInterval(id);
+  }, [simRunning]);
+
+  const simControls = useMemo(
+    () => ({
+      start: () => setSim({ status: "running", speed: 1, anchorTime: Date.now(), anchorElapsed: 0 }),
+      resume: () => setSim((p) => (p ? { ...p, status: "running", anchorTime: Date.now() } : p)),
+      pause: () =>
+        setSim((p) => {
+          if (!p) return p;
+          const e =
+            p.status === "running"
+              ? p.anchorElapsed + (Date.now() - p.anchorTime) * p.speed
+              : p.anchorElapsed;
+          return { ...p, status: "paused", anchorElapsed: e };
+        }),
+      stop: () => setSim(null),
+      setSpeed: (speed) =>
+        setSim((p) => {
+          if (!p) return p;
+          const e =
+            p.status === "running"
+              ? p.anchorElapsed + (Date.now() - p.anchorTime) * p.speed
+              : p.anchorElapsed;
+          return { ...p, speed, anchorElapsed: e, anchorTime: Date.now() };
+        }),
+    }),
+    []
+  );
 
   const flash = useCallback((msg) => {
     setToast(msg);
@@ -612,7 +842,15 @@ export default function App() {
     });
 
   const changeTheme = (id, text) =>
-    setThemes((list) => list.map((t) => (t.id === id ? { ...t, text } : t)));
+    setThemes((list) =>
+      list.map((t) =>
+        t.id === id
+          ? t.source === "COMMENT"
+            ? { ...t, text, source: "MANUAL", sourceCommentId: null } // edited away from its comment
+            : { ...t, text }
+          : t
+      )
+    );
   const deleteTheme = (id) => setThemes((list) => list.filter((t) => t.id !== id));
 
   /* --- generation --- */
@@ -769,7 +1007,13 @@ export default function App() {
     <>
       <style>{GLOBAL_CSS}</style>
       <div style={s.appShell}>
-        <CommentsPanel comments={comments} onUseComment={addCommentTheme} onCopyAll={copyAllComments} />
+        <CommentsPanel
+          comments={comments}
+          onUseComment={addCommentTheme}
+          onCopyAll={copyAllComments}
+          sim={sim ? { status: sim.status, speed: sim.speed, elapsed: simElapsed, duration: SIM_WINDOW_MS } : null}
+          simControls={simControls}
+        />
 
         <main style={s.main}>
           <div style={s.mainInner}>
@@ -779,7 +1023,10 @@ export default function App() {
               <QuestionSwitcher
                 questions={state.questions}
                 activeId={state.activeId}
-                onSelect={(id) => setState((prev) => ({ ...prev, activeId: id }))}
+                onSelect={(id) => {
+                  setSim(null);
+                  setState((prev) => ({ ...prev, activeId: id }));
+                }}
               />
             </div>
 
@@ -896,16 +1143,129 @@ const s = {
   linkBtn: { color: C.blue, fontSize: 12.5, fontWeight: 700 },
   sidebarScroll: { overflowY: "auto", flex: 1, paddingBottom: 40 },
   tableHeader: {
-    padding: "16px 20px 8px",
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    width: "100%",
+    textAlign: "left",
+    padding: "14px 20px 10px",
     fontSize: 10.5,
     fontWeight: 800,
     letterSpacing: "0.1em",
-    color: C.faint,
+    color: C.mute,
+    background: C.bg,
     borderBottom: `1px solid ${C.line}`,
+    position: "sticky",
+    top: 0,
+    zIndex: 2,
   },
-  commentRow: {
+  moreRow: {
+    width: "100%",
+    textAlign: "left",
+    padding: "9px 20px",
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: C.blue,
+    borderBottom: `1px solid ${C.lineSoft}`,
+  },
+  simTableEmpty: {
+    padding: "8px 20px",
+    fontSize: 11.5,
+    color: C.faint,
+    fontStyle: "italic",
+    borderBottom: `1px solid ${C.lineSoft}`,
+  },
+  viewToggle: {
+    display: "flex",
+    gap: 4,
+    marginTop: 12,
+    padding: 3,
+    background: C.lineSoft,
+    borderRadius: 8,
+  },
+  viewToggleOn: {
+    flex: 1,
+    padding: "5px 8px",
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 700,
+    color: C.ink,
+    background: C.bg,
+    boxShadow: "0 1px 2px rgba(20,23,26,0.12)",
+  },
+  viewToggleOff: {
+    flex: 1,
+    padding: "5px 8px",
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 600,
+    color: C.mute,
+  },
+  simFooter: { padding: "12px 16px", borderTop: `1px solid ${C.line}` },
+  simTrigger: {
     display: "flex",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#fff",
+    background: C.redX,
+  },
+  simBar: {
+    position: "relative",
+    padding: "14px 16px",
+    background: C.redX,
+    color: "#fff",
+    boxShadow: "0 -8px 20px rgba(20,23,26,0.12)",
+  },
+  simEdgeTrack: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 5,
+    background: "rgba(255,255,255,0.28)",
+  },
+  simEdgeFill: { height: "100%", background: "#fff", transition: "width 0.4s linear" },
+  simBarTop: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  simBarLabel: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 10.5,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    color: "#fff",
+  },
+  simClock: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "rgba(255,255,255,0.85)",
+    fontVariantNumeric: "tabular-nums",
+  },
+  simBtnRow: { display: "flex", gap: 6 },
+  simBtn: {
+    flex: 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    padding: "7px 6px",
+    borderRadius: 7,
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: "#fff",
+    background: "rgba(255,255,255,0.16)",
+    border: `1px solid rgba(255,255,255,0.4)`,
+  },
+  simBtnOn: { background: "#fff", color: C.redX, borderColor: "#fff" },
+  commentRow: {
+    display: "flex",
+    alignItems: "flex-start",
     gap: 10,
     width: "100%",
     textAlign: "left",
@@ -925,18 +1285,16 @@ const s = {
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    marginTop: 1,
   },
   commentText: {
     fontSize: 13,
     color: C.body,
-    lineHeight: 1.35,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    display: "-webkit-box",
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: "vertical",
+    lineHeight: 1.4,
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
   },
-  commentArrow: { position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", transition: "opacity 0.12s" },
+  commentArrow: { position: "absolute", right: 12, top: 13, transition: "opacity 0.12s" },
 
   /* main */
   main: { flex: 1, minWidth: 0, display: "flex", justifyContent: "center" },
