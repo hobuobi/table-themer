@@ -15,6 +15,7 @@ import {
   Play,
   Pause,
   Square,
+  MessageSquareText,
 } from "lucide-react";
 import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
@@ -48,7 +49,7 @@ const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
-body { margin: 0; background: ${C.bg}; }
+body { margin: 0; background: ${C.bg}; overflow-x: hidden; }
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
 input, textarea { font: inherit; }
 ::selection { background: ${C.blueSoft}; }
@@ -59,16 +60,37 @@ input, textarea { font: inherit; }
   100% { background-color: #FFFFFF; }
 }
 @keyframes ttFadeUp { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes ttSlideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+@keyframes ttSlideLeft { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes ttPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 .tt-hover { opacity: 0 !important; pointer-events: none; }
 .tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
 .tt-comment:hover { background: ${C.lineSoft}; }
 .tt-theme-text:hover { color: ${C.blue} !important; }
 .tt-theme-x:hover { background: ${C.redX} !important; color: #fff !important; }
 .tt-present-row:hover .tt-present-text { color: ${C.blue}; }
+@media (hover: none), (max-width: 768px) {
+  .tt-hover { opacity: 1 !important; pointer-events: auto !important; }
+}
 `;
 
 const MAX_THEME_LEN = 100;
 const STORAGE_KEY = "tt:v2";
+const MOBILE_Q = "(max-width: 768px)";
+
+function useIsMobile() {
+  const [mobile, setMobile] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(MOBILE_Q).matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_Q);
+    const handler = (e) => setMobile(e.matches);
+    setMobile(mq.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return mobile;
+}
 
 /* ---------------- persistence ---------------- */
 
@@ -234,7 +256,7 @@ function CommentItem({ c, onUseComment }) {
   );
 }
 
-function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) {
+function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mobile, onClose }) {
   const simActive = !!sim;
   const done = simActive && sim.elapsed >= sim.duration;
   const revealed = simActive
@@ -278,9 +300,16 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) 
   }, [comments, simActive, sim ? sim.elapsed : null]);
 
   return (
-    <aside style={s.sidebar}>
-      <div style={s.sidebarHead}>
-        <h2 style={s.sidebarTitle}>Comments</h2>
+    <aside style={{ ...s.sidebar, ...(mobile ? s.sidebarMobile : {}) }}>
+      <div style={{ ...s.sidebarHead, ...(mobile ? s.sidebarHeadMobile : {}) }}>
+        <div style={s.sidebarTitleRow}>
+          <h2 style={s.sidebarTitle}>Comments</h2>
+          {mobile && (
+            <button style={s.panelClose} onClick={onClose} aria-label="Close comments">
+              <X size={20} />
+            </button>
+          )}
+        </div>
         <div style={s.sidebarSubRow}>
           <span style={s.livePill}>
             <span style={s.liveDot} />
@@ -306,7 +335,7 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) 
         </div>
       </div>
 
-      <div style={s.sidebarScroll}>
+      <div style={{ ...s.sidebarScroll, ...(mobile ? s.sidebarScrollMobile : {}) }}>
         {mode === "chrono" &&
           (chrono.length === 0 ? (
             <div style={s.simTableEmpty}>No comments yet</div>
@@ -328,6 +357,7 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) 
                   key={flashAt[g.num] || "h"}
                   style={{
                     ...s.tableHeader,
+                    ...(mobile ? { position: "static" } : {}),
                     ...(flashAt[g.num] ? { animation: "ttFlash 1.8s ease-out" } : {}),
                   }}
                   onClick={() => setExpandedNum(expanded ? null : g.num)}
@@ -360,7 +390,7 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls }) 
       </div>
 
       {simActive ? (
-        <div style={s.simBar}>
+        <div style={{ ...s.simBar, ...(mobile ? s.simBarMobile : {}) }}>
           <div style={s.simEdgeTrack}>
             <div
               style={{
@@ -545,6 +575,7 @@ function ShareMenu({ onPresent, onReport, onJson, onClose }) {
 /* ---------------- generate modal ---------------- */
 
 function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAll, onAccept, onClose }) {
+  const mobile = useIsMobile();
   const themeById = useMemo(() => {
     const m = new Map();
     themes.forEach((t, i) => m.set(t.id, { ...t, index: i + 1 }));
@@ -572,10 +603,18 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
   const loading = status === "loading";
 
   return (
-    <div style={s.overlay} onClick={onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+    <div style={{ ...s.overlay, ...(mobile ? s.overlayMobile : {}) }} onClick={onClose}>
+      <div
+        style={{ ...s.modal, ...(mobile ? s.modalMobile : {}) }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {mobile && (
+          <button style={s.sheetGrabber} onClick={onClose} aria-label="Close">
+            <ChevronDown size={20} color={C.faint} />
+          </button>
+        )}
         <div style={s.eyebrow}>CREATE THEMES FOR THIS QUESTION…</div>
-        <h2 style={s.modalTitle}>
+        <h2 style={{ ...s.modalTitle, ...(mobile ? s.modalTitleMobile : {}) }}>
           Select the <span style={{ color: C.green }}>generated themes</span> you would like to keep.
         </h2>
 
@@ -585,15 +624,23 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
             <span style={s.countPill}>{candidates.length}</span>
           </div>
           <div style={s.toolbarRight}>
-            <button style={s.ghostBtn} onClick={onClearAll} disabled={loading || candidates.length === 0}>
+            <button
+              style={{ ...s.ghostBtn, ...(mobile ? s.toolBtnMobile : {}) }}
+              onClick={onClearAll}
+              disabled={loading || candidates.length === 0}
+            >
               Clear All
             </button>
-            <button style={s.softGreenBtn} onClick={onRefresh} disabled={loading}>
+            <button
+              style={{ ...s.softGreenBtn, ...(mobile ? s.toolBtnMobile : {}) }}
+              onClick={onRefresh}
+              disabled={loading}
+            >
               {loading ? <Spinner size={13} /> : <RotateCw size={13} />}
               Refresh
             </button>
             <button
-              style={{ ...s.greenBtn, opacity: chosen.length ? 1 : 0.45 }}
+              style={{ ...s.greenBtn, ...(mobile ? s.toolBtnMobile : {}), opacity: chosen.length ? 1 : 0.45 }}
               onClick={() => onAccept(chosen)}
               disabled={!chosen.length || loading}
             >
@@ -631,7 +678,11 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
             const sims = (c.similarThemeIds || []).map((id) => themeById.get(id)).filter(Boolean);
             const isOn = selected.has(c.id);
             return (
-              <div key={c.id} style={s.candidateRow}>
+              <div
+                key={c.id}
+                style={{ ...s.candidateRow, cursor: "pointer" }}
+                onClick={() => toggle(c.id)}
+              >
                 <SourceBadge source="AI" size={24} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={s.candidateText}>{c.text}</div>
@@ -643,13 +694,12 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
                     </div>
                   ))}
                 </div>
-                <button
+                <span
                   style={isOn ? s.checkOn : s.checkOff}
-                  onClick={() => toggle(c.id)}
                   title={isOn ? "Selected" : "Not selected"}
                 >
                   {isOn && <Check size={14} color="#fff" strokeWidth={3} />}
-                </button>
+                </span>
               </div>
             );
           })}
@@ -681,14 +731,17 @@ function RotatingLine({ items, style, paused }) {
 
 function PresentView({ question, themes, repCommentsForTheme, onBack }) {
   const [hoverId, setHoverId] = useState(null);
+  const mobile = useIsMobile();
   return (
     <div style={s.presentWrap}>
-      <div style={s.presentInner}>
+      <div style={{ ...s.presentInner, ...(mobile ? s.presentInnerMobile : {}) }}>
         <button style={s.backBtn} onClick={onBack}>
           <ArrowLeft size={15} />
           BACK
         </button>
-        <h1 style={s.presentTitle}>{question.mainQuestion}</h1>
+        <h1 style={{ ...s.presentTitle, ...(mobile ? s.presentTitleMobile : {}) }}>
+          {question.mainQuestion}
+        </h1>
         <div style={s.presentCount}>
           {themes.length} {themes.length === 1 ? "theme" : "themes"}
         </div>
@@ -700,17 +753,26 @@ function PresentView({ question, themes, repCommentsForTheme, onBack }) {
               <div
                 key={t.id}
                 className="tt-present-row"
-                style={s.presentRow}
+                style={{ ...s.presentRow, ...(mobile ? s.presentRowMobile : {}) }}
                 onMouseEnter={() => setHoverId(t.id)}
                 onMouseLeave={() => setHoverId(null)}
               >
-                <span style={s.presentNum}>{i + 1}</span>
+                <span style={{ ...s.presentNum, ...(mobile ? s.presentNumMobile : {}) }}>
+                  {i + 1}
+                </span>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div className="tt-present-text" style={s.presentThemeText}>
+                  <div
+                    className="tt-present-text"
+                    style={{ ...s.presentThemeText, ...(mobile ? s.presentThemeTextMobile : {}) }}
+                  >
                     {t.text}
                   </div>
                   {reps.length > 0 && (
-                    <RotatingLine items={reps} style={s.presentQuote} paused={hoverId === t.id} />
+                    <RotatingLine
+                      items={reps}
+                      style={{ ...s.presentQuote, ...(mobile ? s.presentQuoteMobile : {}) }}
+                      paused={hoverId === t.id}
+                    />
                   )}
                 </div>
               </div>
@@ -726,15 +788,16 @@ function PresentView({ question, themes, repCommentsForTheme, onBack }) {
 
 function QuestionSwitcher({ questions, activeId, onSelect }) {
   const [open, setOpen] = useState(false);
+  const mobile = useIsMobile();
   return (
     <span style={{ position: "relative", display: "inline-block" }}>
       <button style={s.qTriangle} onClick={() => setOpen((v) => !v)} title="Switch question">
-        <ChevronDown size={20} color={C.mute} />
+        <ChevronDown size={22} color={C.mute} />
       </button>
       {open && (
         <>
           <div style={s.popScrim} onClick={() => setOpen(false)} />
-          <div style={s.qMenu}>
+          <div style={{ ...s.qMenu, ...(mobile ? s.qMenuMobile : {}) }}>
             {questions.map((q) => (
               <button
                 key={q.id}
@@ -761,12 +824,14 @@ function QuestionSwitcher({ questions, activeId, onSelect }) {
 /* ---------------- app ---------------- */
 
 export default function App() {
+  const mobile = useIsMobile();
   const [state, setState] = useState(null);
   const [view, setView] = useState("work"); // "work" | "present"
   const [showGenerate, setShowGenerate] = useState(false);
   const [genStatus, setGenStatus] = useState("idle"); // idle | loading | error
   const [genError, setGenError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
   const [toast, setToast] = useState("");
   // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
   // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
@@ -879,6 +944,7 @@ export default function App() {
         flash("That comment is already a theme");
         return list;
       }
+      if (mobile) flash("Added to themes");
       return [...list, makeTheme({ text: comment.text, source: "COMMENT", sourceCommentId: comment.id })];
     });
 
@@ -1052,101 +1118,140 @@ export default function App() {
     );
   }
 
+  const panel = (
+    <CommentsPanel
+      comments={comments}
+      onUseComment={addCommentTheme}
+      onCopyAll={copyAllComments}
+      sim={sim ? { status: sim.status, speed: sim.speed, elapsed: simElapsed, duration: SIM_WINDOW_MS } : null}
+      simControls={simControls}
+      mobile={mobile}
+      onClose={() => setCommentsOpen(false)}
+    />
+  );
+
+  const workspace = (
+    <main style={s.main}>
+      <div style={{ ...s.mainInner, ...(mobile ? s.mainInnerMobile : {}) }}>
+        {mobile && (
+          <button style={s.commentsFab} onClick={() => setCommentsOpen(true)}>
+            <MessageSquareText size={17} />
+            <span style={s.commentsFabCount}>{comments.length}</span>
+            {sim && <span style={s.commentsFabDot} />}
+          </button>
+        )}
+        <div style={s.eyebrow}>CREATE THEMES FOR THIS QUESTION…</div>
+        <div style={s.questionRow}>
+          <h1 style={{ ...s.question, ...(mobile ? s.questionMobile : {}) }}>{active.mainQuestion}</h1>
+          <QuestionSwitcher
+            questions={state.questions}
+            activeId={state.activeId}
+            onSelect={(id) => {
+              setSim(null);
+              setState((prev) => ({ ...prev, activeId: id }));
+            }}
+          />
+        </div>
+
+        <ThemeComposer onAdd={addManualTheme} />
+
+        <div style={s.listToolbar}>
+          <div style={s.toolbarLeft}>
+            <span style={s.toolLabel}>ALL THEMES</span>
+            <span style={s.countPill}>{themes.length}</span>
+          </div>
+          <div style={s.toolbarRight}>
+            <button style={{ ...s.generateBtn, ...(mobile ? s.toolBtnMobile : {}) }} onClick={openGenerate}>
+              Generate
+              <Sparkles size={14} color={C.green} />
+            </button>
+            <button
+              style={{ ...s.copyBtn, ...(mobile ? s.toolBtnMobile : {}) }}
+              onClick={copyThemes}
+              disabled={themes.length === 0}
+            >
+              Copy
+            </button>
+            <span style={{ position: "relative", display: "inline-block" }}>
+              <button
+                style={{ ...s.shareBtn, ...(mobile ? s.toolBtnMobile : {}) }}
+                onClick={() => setShareOpen((v) => !v)}
+              >
+                Share
+                <Share2 size={13} color="#fff" />
+              </button>
+              {shareOpen && (
+                <ShareMenu
+                  onPresent={() => {
+                    setShareOpen(false);
+                    setView("present");
+                  }}
+                  onReport={downloadReport}
+                  onJson={downloadJson}
+                  onClose={() => setShareOpen(false)}
+                />
+              )}
+            </span>
+          </div>
+        </div>
+
+        <div style={s.themeList}>
+          {themes.length === 0 && (
+            <div style={s.listEmpty}>
+              {mobile
+                ? "Write a theme above, open Comments to pull one in, or hit Generate."
+                : "Write a theme above, click a comment on the left, or hit Generate."}
+            </div>
+          )}
+          {themes.map((t) => (
+            <ThemeRow
+              key={t.id}
+              theme={t}
+              onChange={(text) => changeTheme(t.id, text)}
+              onDelete={() => deleteTheme(t.id)}
+            />
+          ))}
+        </div>
+      </div>
+    </main>
+  );
+
   return (
     <>
       <style>{GLOBAL_CSS}</style>
-      <div style={s.appShell}>
-        <CommentsPanel
-          comments={comments}
-          onUseComment={addCommentTheme}
-          onCopyAll={copyAllComments}
-          sim={sim ? { status: sim.status, speed: sim.speed, elapsed: simElapsed, duration: SIM_WINDOW_MS } : null}
-          simControls={simControls}
-        />
-
-        <main style={s.main}>
-          <div style={s.mainInner}>
-            <div style={s.eyebrow}>CREATE THEMES FOR THIS QUESTION…</div>
-            <div style={s.questionRow}>
-              <h1 style={s.question}>{active.mainQuestion}</h1>
-              <QuestionSwitcher
-                questions={state.questions}
-                activeId={state.activeId}
-                onSelect={(id) => {
-                  setSim(null);
-                  setState((prev) => ({ ...prev, activeId: id }));
-                }}
-              />
-            </div>
-
-            <ThemeComposer onAdd={addManualTheme} />
-
-            <div style={s.listToolbar}>
-              <div style={s.toolbarLeft}>
-                <span style={s.toolLabel}>ALL THEMES</span>
-                <span style={s.countPill}>{themes.length}</span>
-              </div>
-              <div style={s.toolbarRight}>
-                <button style={s.generateBtn} onClick={openGenerate}>
-                  Generate
-                  <Sparkles size={14} color={C.green} />
-                </button>
-                <button style={s.copyBtn} onClick={copyThemes} disabled={themes.length === 0}>
-                  Copy
-                </button>
-                <span style={{ position: "relative", display: "inline-block" }}>
-                  <button style={s.shareBtn} onClick={() => setShareOpen((v) => !v)}>
-                    Share
-                    <Share2 size={13} color="#fff" />
-                  </button>
-                  {shareOpen && (
-                    <ShareMenu
-                      onPresent={() => {
-                        setShareOpen(false);
-                        setView("present");
-                      }}
-                      onReport={downloadReport}
-                      onJson={downloadJson}
-                      onClose={() => setShareOpen(false)}
-                    />
-                  )}
-                </span>
-              </div>
-            </div>
-
-            <div style={s.themeList}>
-              {themes.length === 0 && (
-                <div style={s.listEmpty}>
-                  Write a theme above, click a comment on the left, or hit Generate.
-                </div>
-              )}
-              {themes.map((t) => (
-                <ThemeRow
-                  key={t.id}
-                  theme={t}
-                  onChange={(text) => changeTheme(t.id, text)}
-                  onDelete={() => deleteTheme(t.id)}
-                />
-              ))}
-            </div>
+      {mobile ? (
+        <div style={s.mobileShell}>
+          {workspace}
+          <div
+            style={{
+              ...s.mobilePanelWrap,
+              ...(commentsOpen ? s.mobilePanelOpen : s.mobilePanelClosed),
+            }}
+          >
+            {panel}
           </div>
-        </main>
+        </div>
+      ) : (
+        <div style={s.appShell}>
+          {panel}
+          {workspace}
+        </div>
+      )}
 
-        {showGenerate && (
-          <GenerateModal
-            status={genStatus}
-            error={genError}
-            candidates={candidates}
-            themes={themes}
-            onRefresh={runGenerate}
-            onClearAll={() => setCandidates(() => [])}
-            onAccept={acceptCandidates}
-            onClose={() => setShowGenerate(false)}
-          />
-        )}
+      {showGenerate && (
+        <GenerateModal
+          status={genStatus}
+          error={genError}
+          candidates={candidates}
+          themes={themes}
+          onRefresh={runGenerate}
+          onClearAll={() => setCandidates(() => [])}
+          onAccept={acceptCandidates}
+          onClose={() => setShowGenerate(false)}
+        />
+      )}
 
-        {toast && <div style={s.toast}>{toast}</div>}
-      </div>
+      {toast && <div style={s.toast}>{toast}</div>}
     </>
   );
 }
@@ -1706,4 +1811,121 @@ const s = {
     zIndex: 80,
     boxShadow: "0 10px 30px rgba(20,23,26,0.25)",
   },
+
+  /* ---------- mobile ---------- */
+  mobileShell: {
+    minHeight: "100vh",
+    background: C.bg,
+    color: C.ink,
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+  },
+  mainInnerMobile: { padding: "20px 16px 110px", maxWidth: "none" },
+  questionMobile: { fontSize: 24, lineHeight: 1.2 },
+  toolBtnMobile: { padding: "11px 18px", fontSize: 14 },
+  commentsFab: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    marginBottom: 18,
+    padding: "9px 14px 9px 12px",
+    borderRadius: 999,
+    background: C.blueSoft,
+    color: C.blue,
+    fontWeight: 700,
+    fontSize: 13,
+    position: "relative",
+  },
+  commentsFabCount: {
+    fontSize: 12,
+    fontWeight: 800,
+    background: C.blue,
+    color: "#fff",
+    borderRadius: 999,
+    padding: "1px 7px",
+  },
+  commentsFabDot: {
+    position: "absolute",
+    top: 4,
+    right: 6,
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    background: C.redX,
+    animation: "ttPulse 1.2s ease-in-out infinite",
+  },
+
+  mobilePanelWrap: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 60,
+    background: C.bg,
+    overflowY: "auto",
+    WebkitOverflowScrolling: "touch",
+    transition: "transform 0.28s ease",
+  },
+  mobilePanelOpen: { transform: "translateX(0)" },
+  mobilePanelClosed: { transform: "translateX(-100%)", pointerEvents: "none" },
+
+  sidebarMobile: {
+    width: "100%",
+    flexShrink: 1,
+    borderRight: "none",
+    height: "auto",
+    minHeight: "100vh",
+    position: "static",
+  },
+  sidebarHeadMobile: {
+    position: "sticky",
+    top: 0,
+    zIndex: 5,
+    background: C.bg,
+  },
+  sidebarScrollMobile: { overflowY: "visible", flex: "1 0 auto" },
+  sidebarTitleRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  panelClose: {
+    width: 36,
+    height: 36,
+    borderRadius: "50%",
+    background: C.lineSoft,
+    color: C.body,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  simBarMobile: { position: "sticky", bottom: 0, zIndex: 8 },
+
+  overlayMobile: { padding: 0, alignItems: "flex-start" },
+  modalMobile: {
+    maxWidth: "none",
+    width: "100%",
+    height: "calc(100vh - 46px)",
+    maxHeight: "calc(100dvh - 46px)",
+    marginTop: 46,
+    borderRadius: "20px 20px 0 0",
+    padding: "10px 18px 20px",
+    animation: "ttSlideDown 0.3s ease",
+  },
+  modalTitleMobile: { fontSize: 19, margin: "4px 0 16px" },
+  sheetGrabber: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "100%",
+    padding: "4px 0 8px",
+  },
+
+  qMenuMobile: { width: "min(340px, calc(100vw - 28px))" },
+
+  presentInnerMobile: { width: "100%", padding: "24px 16px 96px" },
+  presentTitleMobile: { fontSize: 26, lineHeight: 1.15 },
+  presentRowMobile: { gap: 13, padding: "20px 0" },
+  presentNumMobile: { width: 30, height: 30, borderRadius: 7, fontSize: 13, marginTop: 5 },
+  presentThemeTextMobile: { fontSize: 23 },
+  presentQuoteMobile: { fontSize: 15, marginTop: 9 },
 };
