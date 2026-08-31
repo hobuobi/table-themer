@@ -238,19 +238,33 @@ function fmtClock(ms) {
 }
 
 function CommentItem({ c, onUseComment, onDragStartComment, onDragEndComment, draggable }) {
+  const canDrag = !!draggable && !!onDragStartComment;
   return (
-    <button
+    <div
       className="tt-comment tt-row"
-      style={s.commentRow}
-      draggable={!!draggable && !!onDragStartComment}
+      role="button"
+      tabIndex={0}
+      style={{ ...s.commentRow, ...(canDrag ? { cursor: "grab" } : { cursor: "pointer" }) }}
+      draggable={canDrag}
       onDragStart={(e) => {
         e.dataTransfer.setData("text/tt-comment", c.id);
-        e.dataTransfer.effectAllowed = "copy";
+        e.dataTransfer.setData("text/plain", c.text);
+        e.dataTransfer.effectAllowed = "copyMove";
         onDragStartComment && onDragStartComment(c.id);
       }}
       onDragEnd={() => onDragEndComment && onDragEndComment()}
       onClick={() => onUseComment(c)}
-      title="Tap to add as a theme · drag onto a theme to attribute"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onUseComment(c);
+        }
+      }}
+      title={
+        canDrag
+          ? "Click to add as a theme · drag onto a theme to attribute"
+          : "Tap to add as a theme"
+      }
     >
       <span style={s.commentBadge}>T{c.tableNum}</span>
       <span style={s.commentText}>{c.text}</span>
@@ -260,7 +274,7 @@ function CommentItem({ c, onUseComment, onDragStartComment, onDragEndComment, dr
         color={C.faint}
         style={{ ...s.commentArrow, opacity: 0 }}
       />
-    </button>
+    </div>
   );
 }
 
@@ -565,28 +579,39 @@ function ThemeRow({
 
   const count = attributedComments.length;
 
+  const dragKind = (e) => {
+    const types = e.dataTransfer.types || [];
+    if (types.includes("text/tt-comment-theme")) return "theme";
+    if (types.includes("text/tt-comment")) return "comment";
+    return null;
+  };
+
   return (
     <div
       className="tt-row"
       draggable={canDrag}
-      style={{
-        ...s.themeRow,
-        ...(over ? s.themeRowOver : dragActive ? s.themeRowDroppable : {}),
-      }}
+      style={{ ...s.themeRow, ...(over ? s.themeRowOver : {}) }}
       onDragStart={(e) => {
         if (!canDrag) return;
         e.dataTransfer.setData(
           "text/tt-comment-theme",
           JSON.stringify({ themeId: theme.id, commentId: theme.sourceCommentId })
         );
-        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", theme.text);
+        e.dataTransfer.effectAllowed = "copyMove";
         onThemeDragStart && onThemeDragStart();
       }}
       onDragEnd={() => onThemeDragEnd && onThemeDragEnd()}
-      onDragOver={(e) => {
-        if (!dragActive) return;
+      onDragEnter={(e) => {
+        if (!dragKind(e)) return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
+        setOver(true);
+      }}
+      onDragOver={(e) => {
+        const kind = dragKind(e);
+        if (!kind) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = kind === "theme" ? "move" : "copy";
         if (!over) setOver(true);
       }}
       onDragLeave={(e) => {
@@ -1761,7 +1786,6 @@ const s = {
     padding: "18px 40px 18px 0",
     position: "relative",
   },
-  themeRowDroppable: { background: "rgba(59,77,166,0.035)" },
   themeRowOver: { background: C.blueSoft, boxShadow: `inset 3px 0 0 ${C.blue}` },
   attribPill: {
     display: "inline-flex",
