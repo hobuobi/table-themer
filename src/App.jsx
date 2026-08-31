@@ -624,17 +624,13 @@ function ThemeRow({
         const commentId = e.dataTransfer.getData("text/tt-comment");
         if (commentId) {
           onAttach(commentId);
-          setShowAttrib(true);
           return;
         }
         const raw = e.dataTransfer.getData("text/tt-comment-theme");
         if (raw) {
           try {
             const { themeId, commentId: cid } = JSON.parse(raw);
-            if (themeId && themeId !== theme.id) {
-              onMergeCommentTheme(themeId, cid);
-              setShowAttrib(true);
-            }
+            if (themeId && themeId !== theme.id) onMergeCommentTheme(themeId, cid);
           } catch (_) {
             /* ignore malformed payload */
           }
@@ -1775,9 +1771,9 @@ const s = {
   themeList: { marginTop: 8 },
   listEmpty: { padding: "40px 0", color: C.faint, fontSize: 14 },
   themeRow: {
+    borderTop: "1px solid transparent",
     borderBottom: `1px solid ${C.line}`,
-    borderRadius: 6,
-    transition: "background 0.12s, box-shadow 0.12s",
+    transition: "background 0.12s, border-color 0.12s",
   },
   themeRowMain: {
     display: "flex",
@@ -1786,7 +1782,11 @@ const s = {
     padding: "18px 40px 18px 0",
     position: "relative",
   },
-  themeRowOver: { background: C.blueSoft, boxShadow: `inset 3px 0 0 ${C.blue}` },
+  themeRowOver: {
+    background: "rgba(88,197,255,0.03)",
+    borderTopColor: "#58C5FF",
+    borderBottomColor: "#58C5FF",
+  },
   attribPill: {
     display: "inline-flex",
     alignItems: "center",
