@@ -54,6 +54,8 @@ body { margin: 0; background: ${C.bg}; overflow-x: hidden; }
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
 input, textarea { font: inherit; }
 ::selection { background: ${C.blueSoft}; }
+[role="button"]:focus { outline: none; }
+[role="button"]:focus-visible { outline: 2px solid ${C.blue}; outline-offset: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes ttFlash {
   0% { background-color: #FFFFFF; }
@@ -180,6 +182,47 @@ function download(name, text, type = "text/plain") {
 
 const SOURCE_LABEL = { AI: "AI", MANUAL: "Manual", COMMENT: "Comment" };
 
+function abbrev(text, max = 34) {
+  const t = (text || "").trim();
+  return t.length > max ? t.slice(0, max).trimEnd() + "…" : t;
+}
+
+// Custom drag image: a small inverted chip (dark blue, white text/icon)
+// with an abbreviated comment, used in place of the default row ghost.
+function setDragChip(e, text) {
+  const chip = document.createElement("div");
+  chip.style.cssText = [
+    "position:fixed",
+    "top:-1000px",
+    "left:-1000px",
+    "display:flex",
+    "align-items:center",
+    "gap:6px",
+    "max-width:260px",
+    "padding:7px 11px",
+    "border-radius:8px",
+    "background:#2C3781",
+    "color:#fff",
+    "font:600 12.5px/1.2 Inter,-apple-system,sans-serif",
+    "white-space:nowrap",
+    "overflow:hidden",
+    "box-shadow:0 8px 20px rgba(20,23,26,0.35)",
+    "pointer-events:none",
+    "z-index:9999",
+  ].join(";");
+  chip.innerHTML =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" ' +
+    'stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
+    '<line x1="8" x2="16" y1="12" y2="12"/></svg>';
+  const label = document.createElement("span");
+  label.textContent = abbrev(text, 34);
+  chip.appendChild(label);
+  document.body.appendChild(chip);
+  e.dataTransfer.setDragImage(chip, 14, 16);
+  setTimeout(() => chip.remove(), 0);
+}
+
 /* ---------------- atoms ---------------- */
 
 function SourceBadge({ source, size = 26 }) {
@@ -250,6 +293,7 @@ function CommentItem({ c, onUseComment, onDragStartComment, onDragEndComment, dr
         e.dataTransfer.setData("text/tt-comment", c.id);
         e.dataTransfer.setData("text/plain", c.text);
         e.dataTransfer.effectAllowed = "copyMove";
+        setDragChip(e, c.text);
         onDragStartComment && onDragStartComment(c.id);
       }}
       onDragEnd={() => onDragEndComment && onDragEndComment()}
@@ -534,19 +578,19 @@ function ThemeComposer({ onAdd }) {
 function ThemeRow({
   theme,
   attributedComments,
-  dragActive,
+  isOver,
   mobile,
   onChange,
   onDelete,
   onAttach,
   onDetach,
+  onOver,
   onThemeDragStart,
   onThemeDragEnd,
   onMergeCommentTheme,
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
-  const [over, setOver] = useState(false);
   const [showAttrib, setShowAttrib] = useState(false);
   const inputRef = useRef(null);
   const canDrag = theme.source === "COMMENT" && !!theme.sourceCommentId && !mobile && !editing;
@@ -557,10 +601,6 @@ function ThemeRow({
       inputRef.current.select();
     }
   }, [editing]);
-
-  useEffect(() => {
-    if (!dragActive) setOver(false);
-  }, [dragActive]);
 
   const startEdit = () => {
     setDraft(theme.text);
@@ -590,7 +630,7 @@ function ThemeRow({
     <div
       className="tt-row"
       draggable={canDrag}
-      style={{ ...s.themeRow, ...(over ? s.themeRowOver : {}) }}
+      style={{ ...s.themeRow, ...(isOver ? s.themeRowOver : {}) }}
       onDragStart={(e) => {
         if (!canDrag) return;
         e.dataTransfer.setData(
@@ -599,28 +639,19 @@ function ThemeRow({
         );
         e.dataTransfer.setData("text/plain", theme.text);
         e.dataTransfer.effectAllowed = "copyMove";
+        setDragChip(e, theme.text);
         onThemeDragStart && onThemeDragStart();
       }}
       onDragEnd={() => onThemeDragEnd && onThemeDragEnd()}
-      onDragEnter={(e) => {
-        if (!dragKind(e)) return;
-        e.preventDefault();
-        setOver(true);
-      }}
       onDragOver={(e) => {
         const kind = dragKind(e);
         if (!kind) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = kind === "theme" ? "move" : "copy";
-        if (!over) setOver(true);
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget)) return;
-        setOver(false);
+        onOver();
       }}
       onDrop={(e) => {
         e.preventDefault();
-        setOver(false);
         const commentId = e.dataTransfer.getData("text/tt-comment");
         if (commentId) {
           onAttach(commentId);
@@ -987,9 +1018,14 @@ export default function App() {
   const [genError, setGenError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
-  const [draggingCommentId, setDraggingCommentId] = useState(null); // comment being dragged onto a theme
-  const [draggingThemeId, setDraggingThemeId] = useState(null); // COMMENT theme being dragged onto another theme
+  const [dragging, setDragging] = useState(false); // a comment / COMMENT-theme is being dragged
+  const [overThemeId, setOverThemeId] = useState(null); // theme row currently under the drag
   const [toast, setToast] = useState("");
+
+  const endDrag = useCallback(() => {
+    setDragging(false);
+    setOverThemeId(null);
+  }, []);
   // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
   // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
   const [sim, setSim] = useState(null);
@@ -1142,6 +1178,7 @@ export default function App() {
     );
     const th = themes.find((t) => t.id === themeId);
     flash(already ? "Already attributed" : `Attributed to “${th ? th.text : "theme"}”`);
+    endDrag();
   };
 
   const detachComment = (themeId, commentId) =>
@@ -1176,6 +1213,7 @@ export default function App() {
         .filter((t) => t.id !== sourceThemeId)
     );
     flash(`Merged into “${target ? target.text : "theme"}”`);
+    endDrag();
   };
 
   /* --- generation --- */
@@ -1345,8 +1383,8 @@ export default function App() {
       simControls={simControls}
       mobile={mobile}
       onClose={() => setCommentsOpen(false)}
-      onCommentDragStart={setDraggingCommentId}
-      onCommentDragEnd={() => setDraggingCommentId(null)}
+      onCommentDragStart={() => setDragging(true)}
+      onCommentDragEnd={endDrag}
     />
   );
 
@@ -1415,7 +1453,12 @@ export default function App() {
           </div>
         </div>
 
-        <div style={s.themeList}>
+        <div
+          style={s.themeList}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) setOverThemeId(null);
+          }}
+        >
           {themes.length === 0 && (
             <div style={s.listEmpty}>
               {mobile
@@ -1429,15 +1472,14 @@ export default function App() {
               theme={t}
               mobile={mobile}
               attributedComments={attributedCommentsFor(t)}
-              dragActive={
-                !!draggingCommentId || (!!draggingThemeId && draggingThemeId !== t.id)
-              }
+              isOver={dragging && overThemeId === t.id}
               onChange={(text) => changeTheme(t.id, text)}
               onDelete={() => deleteTheme(t.id)}
               onAttach={(commentId) => attributeComment(t.id, commentId)}
               onDetach={(commentId) => detachComment(t.id, commentId)}
-              onThemeDragStart={() => setDraggingThemeId(t.id)}
-              onThemeDragEnd={() => setDraggingThemeId(null)}
+              onOver={() => setOverThemeId(t.id)}
+              onThemeDragStart={() => setDragging(true)}
+              onThemeDragEnd={endDrag}
               onMergeCommentTheme={(sourceThemeId, commentId) =>
                 mergeCommentTheme(sourceThemeId, t.id, commentId)
               }
@@ -1771,9 +1813,7 @@ const s = {
   themeList: { marginTop: 8 },
   listEmpty: { padding: "40px 0", color: C.faint, fontSize: 14 },
   themeRow: {
-    borderTop: "1px solid transparent",
     borderBottom: `1px solid ${C.line}`,
-    transition: "background 0.12s, border-color 0.12s",
   },
   themeRowMain: {
     display: "flex",
@@ -1784,8 +1824,7 @@ const s = {
   },
   themeRowOver: {
     background: "rgba(88,197,255,0.03)",
-    borderTopColor: "#58C5FF",
-    borderBottomColor: "#58C5FF",
+    boxShadow: "inset 0 1px 0 #58C5FF, inset 0 -1px 0 #58C5FF",
   },
   attribPill: {
     display: "inline-flex",
