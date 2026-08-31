@@ -16,6 +16,7 @@ import {
   Pause,
   Square,
   MessageSquareText,
+  Link2,
 } from "lucide-react";
 import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
@@ -236,13 +237,20 @@ function fmtClock(ms) {
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-function CommentItem({ c, onUseComment }) {
+function CommentItem({ c, onUseComment, onDragStartComment, onDragEndComment, draggable }) {
   return (
     <button
       className="tt-comment tt-row"
       style={s.commentRow}
+      draggable={!!draggable && !!onDragStartComment}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/tt-comment", c.id);
+        e.dataTransfer.effectAllowed = "copy";
+        onDragStartComment && onDragStartComment(c.id);
+      }}
+      onDragEnd={() => onDragEndComment && onDragEndComment()}
       onClick={() => onUseComment(c)}
-      title="Add as a theme"
+      title="Tap to add as a theme · drag onto a theme to attribute"
     >
       <span style={s.commentBadge}>T{c.tableNum}</span>
       <span style={s.commentText}>{c.text}</span>
@@ -256,7 +264,17 @@ function CommentItem({ c, onUseComment }) {
   );
 }
 
-function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mobile, onClose }) {
+function CommentsPanel({
+  comments,
+  onUseComment,
+  onCopyAll,
+  sim,
+  simControls,
+  mobile,
+  onClose,
+  onCommentDragStart,
+  onCommentDragEnd,
+}) {
   const simActive = !!sim;
   const done = simActive && sim.elapsed >= sim.duration;
   const revealed = simActive
@@ -340,7 +358,16 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mo
           (chrono.length === 0 ? (
             <div style={s.simTableEmpty}>No comments yet</div>
           ) : (
-            chrono.map((c) => <CommentItem key={c.id} c={c} onUseComment={onUseComment} />)
+            chrono.map((c) => (
+              <CommentItem
+                key={c.id}
+                c={c}
+                onUseComment={onUseComment}
+                onDragStartComment={onCommentDragStart}
+                onDragEndComment={onCommentDragEnd}
+                draggable={!mobile}
+              />
+            ))
           ))}
 
         {mode === "grouped" &&
@@ -377,7 +404,14 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mo
                   <div style={s.simTableEmpty}>No comments yet</div>
                 )}
                 {shown.map((c) => (
-                  <CommentItem key={c.id} c={c} onUseComment={onUseComment} />
+                  <CommentItem
+                    key={c.id}
+                    c={c}
+                    onUseComment={onUseComment}
+                    onDragStartComment={onCommentDragStart}
+                    onDragEndComment={onCommentDragEnd}
+                    draggable={!mobile}
+                  />
                 ))}
                 {hidden > 0 && (
                   <button style={s.moreRow} onClick={() => setExpandedNum(g.num)}>
@@ -483,9 +517,11 @@ function ThemeComposer({ onAdd }) {
 
 /* ---------------- theme row (WYSIWYG) ---------------- */
 
-function ThemeRow({ theme, onChange, onDelete }) {
+function ThemeRow({ theme, attributedComments, dragActive, onChange, onDelete, onAttach, onDetach }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
+  const [over, setOver] = useState(false);
+  const [showAttrib, setShowAttrib] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -494,6 +530,10 @@ function ThemeRow({ theme, onChange, onDelete }) {
       inputRef.current.select();
     }
   }, [editing]);
+
+  useEffect(() => {
+    if (!dragActive) setOver(false);
+  }, [dragActive]);
 
   const startEdit = () => {
     setDraft(theme.text);
@@ -510,40 +550,97 @@ function ThemeRow({ theme, onChange, onDelete }) {
     if (v !== theme.text) onChange(v);
   };
 
+  const count = attributedComments.length;
+
   return (
-    <div className="tt-row" style={s.themeRow}>
-      <SourceBadge source={theme.source} />
-      {editing ? (
-        <input
-          ref={inputRef}
-          value={draft}
-          maxLength={MAX_THEME_LEN}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            } else if (e.key === "Escape") {
-              setDraft(theme.text);
-              setEditing(false);
-            }
-          }}
-          style={s.themeEditInput}
-        />
-      ) : (
-        <button className="tt-theme-text" style={s.themeText} onClick={startEdit} title="Click to edit">
-          {theme.text}
+    <div
+      className="tt-row"
+      style={{
+        ...s.themeRow,
+        ...(over ? s.themeRowOver : dragActive ? s.themeRowDroppable : {}),
+      }}
+      onDragOver={(e) => {
+        if (!dragActive) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (!over) setOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget)) return;
+        setOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        const id = e.dataTransfer.getData("text/tt-comment");
+        if (id) {
+          onAttach(id);
+          setShowAttrib(true);
+        }
+      }}
+    >
+      <div style={s.themeRowMain}>
+        <SourceBadge source={theme.source} />
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            maxLength={MAX_THEME_LEN}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+              } else if (e.key === "Escape") {
+                setDraft(theme.text);
+                setEditing(false);
+              }
+            }}
+            style={s.themeEditInput}
+          />
+        ) : (
+          <button className="tt-theme-text" style={s.themeText} onClick={startEdit} title="Click to edit">
+            {theme.text}
+          </button>
+        )}
+        {count > 0 && (
+          <button
+            style={{ ...s.attribPill, ...(showAttrib ? s.attribPillOn : {}) }}
+            onClick={() => setShowAttrib((v) => !v)}
+            title={`${count} attributed comment${count === 1 ? "" : "s"}`}
+          >
+            <Link2 size={11} strokeWidth={2.6} />
+            {count}
+          </button>
+        )}
+        <button
+          className="tt-hover tt-theme-x"
+          style={{ ...s.themeDelete, opacity: 0 }}
+          onClick={onDelete}
+          title="Delete theme"
+        >
+          <X size={13} strokeWidth={2.6} />
         </button>
+      </div>
+
+      {showAttrib && count > 0 && (
+        <div style={s.attribList}>
+          {attributedComments.map((c) => (
+            <div key={c.id} style={s.attribItem}>
+              <span style={s.commentBadge}>T{c.tableNum}</span>
+              <span style={s.attribItemText}>{c.text}</span>
+              <button
+                style={s.attribDetach}
+                onClick={() => onDetach(c.id)}
+                title="Remove attribution"
+              >
+                <X size={11} strokeWidth={2.6} />
+              </button>
+            </div>
+          ))}
+        </div>
       )}
-      <button
-        className="tt-hover tt-theme-x"
-        style={{ ...s.themeDelete, opacity: 0 }}
-        onClick={onDelete}
-        title="Delete theme"
-      >
-        <X size={13} strokeWidth={2.6} />
-      </button>
     </div>
   );
 }
@@ -832,6 +929,7 @@ export default function App() {
   const [genError, setGenError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
+  const [draggingCommentId, setDraggingCommentId] = useState(null); // comment being dragged onto a theme
   const [toast, setToast] = useState("");
   // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
   // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
@@ -914,16 +1012,25 @@ export default function App() {
     return m;
   }, [comments]);
 
+  // Comments manually (or AI-) attributed to a theme — drives the row's
+  // link pill and drag-drop attribution.
+  const attributedCommentsFor = useCallback(
+    (theme) => (theme.informingCommentIds || []).map((id) => commentById.get(id)).filter(Boolean),
+    [commentById]
+  );
+
+  // Everything associated with a theme (origin comment + attributions),
+  // for the report / JSON export.
   const commentsForTheme = useCallback(
     (theme) => {
-      if (theme.source === "COMMENT") {
-        const c = commentById.get(theme.sourceCommentId);
-        return c ? [c] : [];
-      }
-      if (theme.source === "AI") {
-        return (theme.informingCommentIds || []).map((id) => commentById.get(id)).filter(Boolean);
-      }
-      return [];
+      const ids = [];
+      if (theme.source === "COMMENT" && theme.sourceCommentId) ids.push(theme.sourceCommentId);
+      (theme.informingCommentIds || []).forEach((id) => ids.push(id));
+      const seen = new Set();
+      return ids
+        .filter((id) => !seen.has(id) && seen.add(id))
+        .map((id) => commentById.get(id))
+        .filter(Boolean);
     },
     [commentById]
   );
@@ -959,6 +1066,40 @@ export default function App() {
       )
     );
   const deleteTheme = (id) => setThemes((list) => list.filter((t) => t.id !== id));
+
+  const attributeComment = (themeId, commentId) => {
+    if (!commentById.has(commentId)) return;
+    let already = false;
+    setThemes((list) =>
+      list.map((t) => {
+        if (t.id !== themeId) return t;
+        const ids = t.informingCommentIds || [];
+        if (ids.includes(commentId) || t.sourceCommentId === commentId) {
+          already = true;
+          return t;
+        }
+        return { ...t, informingCommentIds: [...ids, commentId] };
+      })
+    );
+    const th = themes.find((t) => t.id === themeId);
+    flash(already ? "Already attributed" : `Attributed to “${th ? th.text : "theme"}”`);
+  };
+
+  const detachComment = (themeId, commentId) =>
+    setThemes((list) =>
+      list.map((t) => {
+        if (t.id !== themeId) return t;
+        const next = {
+          ...t,
+          informingCommentIds: (t.informingCommentIds || []).filter((id) => id !== commentId),
+        };
+        if (t.source === "COMMENT" && t.sourceCommentId === commentId) {
+          next.source = "MANUAL";
+          next.sourceCommentId = null;
+        }
+        return next;
+      })
+    );
 
   /* --- generation --- */
   const runGenerate = useCallback(async () => {
@@ -1127,6 +1268,8 @@ export default function App() {
       simControls={simControls}
       mobile={mobile}
       onClose={() => setCommentsOpen(false)}
+      onCommentDragStart={setDraggingCommentId}
+      onCommentDragEnd={() => setDraggingCommentId(null)}
     />
   );
 
@@ -1207,8 +1350,12 @@ export default function App() {
             <ThemeRow
               key={t.id}
               theme={t}
+              attributedComments={attributedCommentsFor(t)}
+              dragActive={!!draggingCommentId}
               onChange={(text) => changeTheme(t.id, text)}
               onDelete={() => deleteTheme(t.id)}
+              onAttach={(commentId) => attributeComment(t.id, commentId)}
+              onDetach={(commentId) => detachComment(t.id, commentId)}
             />
           ))}
         </div>
@@ -1539,12 +1686,56 @@ const s = {
   themeList: { marginTop: 8 },
   listEmpty: { padding: "40px 0", color: C.faint, fontSize: 14 },
   themeRow: {
+    borderBottom: `1px solid ${C.line}`,
+    borderRadius: 6,
+    transition: "background 0.12s, box-shadow 0.12s",
+  },
+  themeRowMain: {
     display: "flex",
     alignItems: "center",
     gap: 14,
     padding: "18px 40px 18px 0",
-    borderBottom: `1px solid ${C.line}`,
     position: "relative",
+  },
+  themeRowDroppable: { background: "rgba(59,77,166,0.035)" },
+  themeRowOver: { background: C.blueSoft, boxShadow: `inset 3px 0 0 ${C.blue}` },
+  attribPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 3,
+    flexShrink: 0,
+    padding: "2px 8px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 800,
+    color: C.blue,
+    background: C.blueSoft,
+  },
+  attribPillOn: { color: "#fff", background: C.blue },
+  attribList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    padding: "0 0 16px 40px",
+  },
+  attribItem: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 9,
+    fontSize: 12.5,
+    color: C.body,
+  },
+  attribItemText: { flex: 1, lineHeight: 1.4, paddingTop: 1 },
+  attribDetach: {
+    width: 20,
+    height: 20,
+    borderRadius: "50%",
+    background: C.redSoft,
+    color: C.redX,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   },
   themeText: {
     flex: 1,
