@@ -517,12 +517,25 @@ function ThemeComposer({ onAdd }) {
 
 /* ---------------- theme row (WYSIWYG) ---------------- */
 
-function ThemeRow({ theme, attributedComments, dragActive, onChange, onDelete, onAttach, onDetach }) {
+function ThemeRow({
+  theme,
+  attributedComments,
+  dragActive,
+  mobile,
+  onChange,
+  onDelete,
+  onAttach,
+  onDetach,
+  onThemeDragStart,
+  onThemeDragEnd,
+  onMergeCommentTheme,
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
   const [over, setOver] = useState(false);
   const [showAttrib, setShowAttrib] = useState(false);
   const inputRef = useRef(null);
+  const canDrag = theme.source === "COMMENT" && !!theme.sourceCommentId && !mobile && !editing;
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -555,10 +568,21 @@ function ThemeRow({ theme, attributedComments, dragActive, onChange, onDelete, o
   return (
     <div
       className="tt-row"
+      draggable={canDrag}
       style={{
         ...s.themeRow,
         ...(over ? s.themeRowOver : dragActive ? s.themeRowDroppable : {}),
       }}
+      onDragStart={(e) => {
+        if (!canDrag) return;
+        e.dataTransfer.setData(
+          "text/tt-comment-theme",
+          JSON.stringify({ themeId: theme.id, commentId: theme.sourceCommentId })
+        );
+        e.dataTransfer.effectAllowed = "move";
+        onThemeDragStart && onThemeDragStart();
+      }}
+      onDragEnd={() => onThemeDragEnd && onThemeDragEnd()}
       onDragOver={(e) => {
         if (!dragActive) return;
         e.preventDefault();
@@ -572,14 +596,27 @@ function ThemeRow({ theme, attributedComments, dragActive, onChange, onDelete, o
       onDrop={(e) => {
         e.preventDefault();
         setOver(false);
-        const id = e.dataTransfer.getData("text/tt-comment");
-        if (id) {
-          onAttach(id);
+        const commentId = e.dataTransfer.getData("text/tt-comment");
+        if (commentId) {
+          onAttach(commentId);
           setShowAttrib(true);
+          return;
+        }
+        const raw = e.dataTransfer.getData("text/tt-comment-theme");
+        if (raw) {
+          try {
+            const { themeId, commentId: cid } = JSON.parse(raw);
+            if (themeId && themeId !== theme.id) {
+              onMergeCommentTheme(themeId, cid);
+              setShowAttrib(true);
+            }
+          } catch (_) {
+            /* ignore malformed payload */
+          }
         }
       }}
     >
-      <div style={s.themeRowMain}>
+      <div style={{ ...s.themeRowMain, ...(canDrag ? { cursor: "grab" } : {}) }}>
         <SourceBadge source={theme.source} />
         {editing ? (
           <input
@@ -930,6 +967,7 @@ export default function App() {
   const [shareOpen, setShareOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
   const [draggingCommentId, setDraggingCommentId] = useState(null); // comment being dragged onto a theme
+  const [draggingThemeId, setDraggingThemeId] = useState(null); // COMMENT theme being dragged onto another theme
   const [toast, setToast] = useState("");
   // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
   // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
@@ -1100,6 +1138,24 @@ export default function App() {
         return next;
       })
     );
+
+  // Drag a COMMENT theme onto another theme: fold its comment into the
+  // target's attributions and drop the standalone COMMENT theme.
+  const mergeCommentTheme = (sourceThemeId, targetThemeId, commentId) => {
+    if (sourceThemeId === targetThemeId) return;
+    const target = themes.find((t) => t.id === targetThemeId);
+    setThemes((list) =>
+      list
+        .map((t) => {
+          if (t.id !== targetThemeId || !commentId || !commentById.has(commentId)) return t;
+          const ids = t.informingCommentIds || [];
+          if (ids.includes(commentId) || t.sourceCommentId === commentId) return t;
+          return { ...t, informingCommentIds: [...ids, commentId] };
+        })
+        .filter((t) => t.id !== sourceThemeId)
+    );
+    flash(`Merged into “${target ? target.text : "theme"}”`);
+  };
 
   /* --- generation --- */
   const runGenerate = useCallback(async () => {
@@ -1350,12 +1406,20 @@ export default function App() {
             <ThemeRow
               key={t.id}
               theme={t}
+              mobile={mobile}
               attributedComments={attributedCommentsFor(t)}
-              dragActive={!!draggingCommentId}
+              dragActive={
+                !!draggingCommentId || (!!draggingThemeId && draggingThemeId !== t.id)
+              }
               onChange={(text) => changeTheme(t.id, text)}
               onDelete={() => deleteTheme(t.id)}
               onAttach={(commentId) => attributeComment(t.id, commentId)}
               onDetach={(commentId) => detachComment(t.id, commentId)}
+              onThemeDragStart={() => setDraggingThemeId(t.id)}
+              onThemeDragEnd={() => setDraggingThemeId(null)}
+              onMergeCommentTheme={(sourceThemeId, commentId) =>
+                mergeCommentTheme(sourceThemeId, t.id, commentId)
+              }
             />
           ))}
         </div>
