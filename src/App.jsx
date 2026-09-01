@@ -17,6 +17,7 @@ import {
   Square,
   MessageSquareText,
   MessageSquare,
+  Plus,
 } from "lucide-react";
 import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
@@ -78,6 +79,7 @@ input, textarea { font: inherit; }
 .tt-theme-row:hover { background: rgba(88,197,255,0.05); }
 .tt-theme-main:hover .tt-theme-text { color: ${C.blue} !important; }
 .tt-theme-main:hover .tt-attrib-pill { background: ${C.blue} !important; color: #fff !important; }
+.tt-attrib-gen:hover { background: ${C.green} !important; color: #fff !important; }
 .tt-attrib-text:hover { color: ${C.blue}; }
 .tt-badge-del, .tt-abadge-del { position: relative; display: inline-flex; flex-shrink: 0; }
 .tt-badge-x, .tt-abadge-x {
@@ -269,7 +271,7 @@ function SourceBadge({ source, size = 26 }) {
   );
 }
 
-function Spinner({ size = 18 }) {
+function Spinner({ size = 18, color = C.blue }) {
   return (
     <span
       style={{
@@ -277,7 +279,7 @@ function Spinner({ size = 18 }) {
         height: size,
         borderRadius: "50%",
         border: `2.5px solid ${C.line}`,
-        borderTopColor: C.blue,
+        borderTopColor: color,
         display: "inline-block",
         animation: "spin 0.8s linear infinite",
       }}
@@ -642,9 +644,11 @@ function ThemeRow({
   onThemeDragStart,
   onThemeDragEnd,
   onMergeCommentTheme,
+  onGenerateAttributions,
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
+  const [generating, setGenerating] = useState(false);
   const inputRef = useRef(null);
   const canDrag = theme.source === "COMMENT" && !!theme.sourceCommentId && !mobile && !editing;
 
@@ -658,6 +662,16 @@ function ThemeRow({
   const startEdit = () => {
     setDraft(theme.text);
     setEditing(true);
+  };
+
+  const runGenerateAttributions = async () => {
+    if (generating) return;
+    setGenerating(true);
+    try {
+      await onGenerateAttributions();
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const commit = () => {
@@ -755,7 +769,7 @@ function ThemeRow({
             {theme.text}
           </span>
         )}
-        {count > 0 && (
+        {count > 0 ? (
           <span
             className="tt-attrib-pill"
             style={{ ...s.attribPill, ...(showList ? s.attribPillOn : {}) }}
@@ -764,6 +778,20 @@ function ThemeRow({
             <MessageSquare size={11} strokeWidth={2.6} />
             {count}
           </span>
+        ) : (
+          <button
+            className="tt-attrib-gen"
+            style={s.attribGenPill}
+            disabled={generating}
+            onClick={(e) => {
+              e.stopPropagation();
+              runGenerateAttributions();
+            }}
+            title="Find comments for this theme"
+          >
+            <MessageSquare size={11} strokeWidth={2.6} />
+            {generating ? <Spinner size={10} color={C.green} /> : <Plus size={11} strokeWidth={3.2} />}
+          </button>
         )}
       </div>
 
@@ -1268,6 +1296,52 @@ export default function App() {
     );
   const deleteTheme = (id) => setThemes((list) => list.filter((t) => t.id !== id));
 
+  // Ask the model which comments support a theme that has none attributed yet.
+  const generateAttributions = async (themeId) => {
+    const theme = themes.find((t) => t.id === themeId);
+    if (!theme || comments.length === 0) return;
+    try {
+      const res = await fetch("/api/attribute-theme", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mainQuestion: active.mainQuestion,
+          themeText: theme.text,
+          comments: comments.map((c, i) => ({ id: String(i), table: c.tableName, text: c.text })),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Request failed");
+      }
+      const data = await res.json();
+      const reps = [
+        ...new Set(
+          (data.representativeCommentIds || [])
+            .map((i) => comments[Number(i)]?.id)
+            .filter(Boolean)
+        ),
+      ].filter((id) => id !== theme.sourceCommentId);
+
+      if (reps.length === 0) {
+        flash("No matching comments found");
+        return;
+      }
+      // Match an accepted AI theme: same list in both fields.
+      setThemes((list) =>
+        list.map((t) =>
+          t.id === themeId
+            ? { ...t, informingCommentIds: reps, representativeCommentIds: reps }
+            : t
+        )
+      );
+      flash(`Attributed ${reps.length} comment${reps.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      console.error(e);
+      flash("Couldn't generate attributions");
+    }
+  };
+
   const attributeComment = (themeId, commentId) => {
     if (!commentById.has(commentId)) return;
     let already = false;
@@ -1589,6 +1663,7 @@ export default function App() {
               onMergeCommentTheme={(sourceThemeId, commentId) =>
                 mergeCommentTheme(sourceThemeId, t.id, commentId)
               }
+              onGenerateAttributions={() => generateAttributions(t.id)}
             />
           ))}
         </div>
@@ -1945,6 +2020,18 @@ const s = {
     background: C.blueSoft,
   },
   attribPillOn: { color: "#fff", background: C.blue },
+  attribGenPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    flexShrink: 0,
+    padding: "3px 9px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 800,
+    color: C.green,
+    background: C.greenSoft,
+  },
   attribList: {
     display: "flex",
     flexDirection: "column",
