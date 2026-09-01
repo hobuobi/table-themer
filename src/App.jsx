@@ -50,7 +50,13 @@ const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
-body { margin: 0; background: ${C.bg}; overflow-x: hidden; }
+body {
+  margin: 0;
+  background: ${C.bg};
+  overflow-x: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: ${C.ink};
+}
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
 input, textarea { font: inherit; }
 ::selection { background: ${C.blueSoft}; }
@@ -805,7 +811,77 @@ function ShareMenu({ onPresent, onReport, onJson, onClose }) {
 
 /* ---------------- generate modal ---------------- */
 
-function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAll, onAccept, onClose }) {
+function CandidateRow({ c, isOn, sims, comments, onToggle }) {
+  const [open, setOpen] = useState(false);
+  const count = comments.length;
+  return (
+    <div style={s.candidateRow}>
+      <div
+        className="tt-theme-main"
+        style={{ ...s.candidateMain, cursor: count ? "pointer" : "default" }}
+        onClick={() => count && setOpen((v) => !v)}
+      >
+        <SourceBadge source="AI" size={26} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="tt-theme-text" style={s.candidateText}>
+            {c.text}
+          </div>
+          {sims.map((t) => (
+            <div key={t.id} style={s.similarNote}>
+              <CornerDownRight size={12} color={C.mute} />
+              Similar to <span style={{ color: C.blue, fontWeight: 700 }}>#{t.index}</span>{" "}
+              <span style={{ color: C.mute }}>({t.text})</span>
+            </div>
+          ))}
+        </div>
+        {count > 0 && (
+          <span
+            className="tt-attrib-pill"
+            style={{ ...s.attribPill, ...(open ? s.attribPillOn : {}) }}
+            title={`${count} comment${count === 1 ? "" : "s"}`}
+          >
+            <MessageSquare size={11} strokeWidth={2.6} />
+            {count}
+          </span>
+        )}
+        <button
+          style={isOn ? s.checkOn : s.checkOff}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+          title={isOn ? "Selected" : "Not selected"}
+        >
+          {isOn && <Check size={14} color="#fff" strokeWidth={3} />}
+        </button>
+      </div>
+      {open && count > 0 && (
+        <div style={s.attribList}>
+          {comments.map((cm) => (
+            <div key={cm.id} style={s.attribItem}>
+              <span style={s.attribBadgeCell}>
+                <span style={s.attribBadgeFace}>T{cm.tableNum}</span>
+              </span>
+              <span style={s.attribItemText}>{cm.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GenerateModal({
+  status,
+  error,
+  candidates,
+  themes,
+  resolveComments,
+  onRefresh,
+  onClearAll,
+  onAccept,
+  onClose,
+}) {
   const mobile = useIsMobile();
   const themeById = useMemo(() => {
     const m = new Map();
@@ -905,35 +981,20 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
             </div>
           )}
 
-          {ordered.map((c) => {
-            const sims = (c.similarThemeIds || []).map((id) => themeById.get(id)).filter(Boolean);
-            const isOn = selected.has(c.id);
-            return (
-              <div
-                key={c.id}
-                style={{ ...s.candidateRow, cursor: "pointer" }}
-                onClick={() => toggle(c.id)}
-              >
-                <SourceBadge source="AI" size={24} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={s.candidateText}>{c.text}</div>
-                  {sims.map((t) => (
-                    <div key={t.id} style={s.similarNote}>
-                      <CornerDownRight size={12} color={C.mute} />
-                      Similar to <span style={{ color: C.blue, fontWeight: 700 }}>#{t.index}</span>{" "}
-                      <span style={{ color: C.mute }}>({t.text})</span>
-                    </div>
-                  ))}
-                </div>
-                <span
-                  style={isOn ? s.checkOn : s.checkOff}
-                  title={isOn ? "Selected" : "Not selected"}
-                >
-                  {isOn && <Check size={14} color="#fff" strokeWidth={3} />}
-                </span>
-              </div>
-            );
-          })}
+          {ordered.map((c) => (
+            <CandidateRow
+              key={c.id}
+              c={c}
+              isOn={selected.has(c.id)}
+              sims={(c.similarThemeIds || []).map((id) => themeById.get(id)).filter(Boolean)}
+              comments={resolveComments(
+                c.representativeCommentIds && c.representativeCommentIds.length
+                  ? c.representativeCommentIds
+                  : c.informingCommentIds || []
+              )}
+              onToggle={() => toggle(c.id)}
+            />
+          ))}
         </div>
       </div>
     </div>
@@ -1563,6 +1624,7 @@ export default function App() {
           error={genError}
           candidates={candidates}
           themes={themes}
+          resolveComments={(ids) => (ids || []).map((id) => commentById.get(id)).filter(Boolean)}
           onRefresh={runGenerate}
           onClearAll={() => setCandidates(() => [])}
           onAccept={acceptCandidates}
@@ -2049,14 +2111,21 @@ const s = {
     color: C.mute,
     fontSize: 13.5,
   },
-  candidateRow: {
+  candidateRow: { borderBottom: `1px solid ${C.line}` },
+  candidateMain: {
     display: "flex",
     alignItems: "flex-start",
     gap: 12,
     padding: "16px 4px",
-    borderBottom: `1px solid ${C.line}`,
   },
-  candidateText: { fontSize: 15.5, fontWeight: 700, color: C.ink, lineHeight: 1.3, letterSpacing: "-0.01em" },
+  candidateText: {
+    fontSize: 15.5,
+    fontWeight: 700,
+    color: C.ink,
+    lineHeight: 1.3,
+    letterSpacing: "-0.01em",
+    transition: "color 0.12s",
+  },
   similarNote: { display: "flex", alignItems: "center", gap: 5, marginTop: 5, fontSize: 12, color: C.body },
   checkOn: {
     width: 24,
