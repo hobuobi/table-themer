@@ -16,7 +16,7 @@ import {
   Pause,
   Square,
   MessageSquareText,
-  Link2,
+  MessageSquare,
 } from "lucide-react";
 import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
@@ -69,8 +69,18 @@ input, textarea { font: inherit; }
 .tt-hover { opacity: 0 !important; pointer-events: none; }
 .tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
 .tt-comment:hover { background: ${C.lineSoft}; }
-.tt-theme-text:hover { color: ${C.blue} !important; }
-.tt-theme-x:hover { background: ${C.redX} !important; color: #fff !important; }
+.tt-theme-row:hover { background: rgba(88,197,255,0.05); }
+.tt-theme-main:hover .tt-theme-text { color: ${C.blue} !important; }
+.tt-theme-main:hover .tt-attrib-pill { background: ${C.blue} !important; color: #fff !important; }
+.tt-attrib-text:hover { color: ${C.blue}; }
+.tt-badge-del, .tt-abadge-del { position: relative; display: inline-flex; flex-shrink: 0; }
+.tt-badge-x, .tt-abadge-x {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: ${C.redX}; opacity: 0; transition: opacity 0.1s;
+}
+.tt-badge-x { border-radius: 6px; }
+.tt-abadge-x { border-radius: 4px; }
+.tt-badge-del:hover .tt-badge-x, .tt-abadge-del:hover .tt-abadge-x { opacity: 1; }
 .tt-present-row:hover .tt-present-text { color: ${C.blue}; }
 @media (hover: none), (max-width: 768px) {
   .tt-hover { opacity: 1 !important; pointer-events: auto !important; }
@@ -575,6 +585,44 @@ function ThemeComposer({ onAdd }) {
 
 /* ---------------- theme row (WYSIWYG) ---------------- */
 
+// The theme's source badge doubles as its delete control: hover turns
+// it into a red square with a white X.
+function ThemeBadgeButton({ source, onDelete }) {
+  return (
+    <button
+      className="tt-badge-del"
+      onClick={(e) => {
+        e.stopPropagation();
+        onDelete();
+      }}
+      title="Remove theme"
+    >
+      <SourceBadge source={source} size={26} />
+      <span className="tt-badge-x">
+        <X size={14} color="#fff" strokeWidth={3} />
+      </span>
+    </button>
+  );
+}
+
+// Attributed-comment badge (light blue / dark blue "T{n}"); hover to
+// detach, mirroring the theme badge.
+function AttribBadgeButton({ tableNum, onDetach }) {
+  return (
+    <button
+      className="tt-abadge-del"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onDetach}
+      title="Remove attribution"
+    >
+      <span style={s.attribBadgeFace}>T{tableNum}</span>
+      <span className="tt-abadge-x">
+        <X size={11} color="#fff" strokeWidth={3} />
+      </span>
+    </button>
+  );
+}
+
 function ThemeRow({
   theme,
   attributedComments,
@@ -591,7 +639,6 @@ function ThemeRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
-  const [showAttrib, setShowAttrib] = useState(false);
   const inputRef = useRef(null);
   const canDrag = theme.source === "COMMENT" && !!theme.sourceCommentId && !mobile && !editing;
 
@@ -618,6 +665,7 @@ function ThemeRow({
   };
 
   const count = attributedComments.length;
+  const showList = editing && count > 0;
 
   const dragKind = (e) => {
     const types = e.dataTransfer.types || [];
@@ -628,7 +676,7 @@ function ThemeRow({
 
   return (
     <div
-      className="tt-row"
+      className="tt-row tt-theme-row"
       draggable={canDrag}
       style={{ ...s.themeRow, ...(isOver ? s.themeRowOver : {}) }}
       onDragStart={(e) => {
@@ -668,14 +716,22 @@ function ThemeRow({
         }
       }}
     >
-      <div style={{ ...s.themeRowMain, ...(canDrag ? { cursor: "grab" } : {}) }}>
-        <SourceBadge source={theme.source} />
+      <div
+        className="tt-theme-main"
+        style={{ ...s.themeRowMain, cursor: canDrag ? "grab" : "pointer" }}
+        onClick={() => {
+          if (!editing) startEdit();
+        }}
+        title={editing ? undefined : "Click to edit"}
+      >
+        <ThemeBadgeButton source={theme.source} onDelete={onDelete} />
         {editing ? (
           <input
             ref={inputRef}
             value={draft}
             maxLength={MAX_THEME_LEN}
             onChange={(e) => setDraft(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
             onBlur={commit}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -689,43 +745,32 @@ function ThemeRow({
             style={s.themeEditInput}
           />
         ) : (
-          <button className="tt-theme-text" style={s.themeText} onClick={startEdit} title="Click to edit">
+          <span className="tt-theme-text" style={s.themeText}>
             {theme.text}
-          </button>
+          </span>
         )}
         {count > 0 && (
-          <button
-            style={{ ...s.attribPill, ...(showAttrib ? s.attribPillOn : {}) }}
-            onClick={() => setShowAttrib((v) => !v)}
+          <span
+            className="tt-attrib-pill"
+            style={{ ...s.attribPill, ...(showList ? s.attribPillOn : {}) }}
             title={`${count} attributed comment${count === 1 ? "" : "s"}`}
           >
-            <Link2 size={11} strokeWidth={2.6} />
+            <MessageSquare size={11} strokeWidth={2.6} />
             {count}
-          </button>
+          </span>
         )}
-        <button
-          className="tt-hover tt-theme-x"
-          style={{ ...s.themeDelete, opacity: 0 }}
-          onClick={onDelete}
-          title="Delete theme"
-        >
-          <X size={13} strokeWidth={2.6} />
-        </button>
       </div>
 
-      {showAttrib && count > 0 && (
+      {showList && (
         <div style={s.attribList}>
           {attributedComments.map((c) => (
             <div key={c.id} style={s.attribItem}>
-              <span style={s.commentBadge}>T{c.tableNum}</span>
-              <span style={s.attribItemText}>{c.text}</span>
-              <button
-                style={s.attribDetach}
-                onClick={() => onDetach(c.id)}
-                title="Remove attribution"
-              >
-                <X size={11} strokeWidth={2.6} />
-              </button>
+              <span style={s.attribBadgeCell}>
+                <AttribBadgeButton tableNum={c.tableNum} onDetach={() => onDetach(c.id)} />
+              </span>
+              <span className="tt-attrib-text" style={s.attribItemText}>
+                {c.text}
+              </span>
             </div>
           ))}
         </div>
@@ -1819,8 +1864,7 @@ const s = {
     display: "flex",
     alignItems: "center",
     gap: 14,
-    padding: "18px 40px 18px 0",
-    position: "relative",
+    padding: "18px 12px",
   },
   themeRowOver: {
     background: "rgba(88,197,255,0.03)",
@@ -1829,9 +1873,9 @@ const s = {
   attribPill: {
     display: "inline-flex",
     alignItems: "center",
-    gap: 3,
+    gap: 4,
     flexShrink: 0,
-    padding: "2px 8px",
+    padding: "3px 9px",
     borderRadius: 999,
     fontSize: 11,
     fontWeight: 800,
@@ -1842,28 +1886,30 @@ const s = {
   attribList: {
     display: "flex",
     flexDirection: "column",
-    gap: 8,
-    padding: "0 0 16px 40px",
+    gap: 9,
+    padding: "0 12px 16px 12px",
   },
   attribItem: {
     display: "flex",
     alignItems: "flex-start",
-    gap: 9,
-    fontSize: 12.5,
+    gap: 12,
+    fontSize: 13,
     color: C.body,
   },
-  attribItemText: { flex: 1, lineHeight: 1.4, paddingTop: 1 },
-  attribDetach: {
-    width: 20,
-    height: 20,
-    borderRadius: "50%",
-    background: C.redSoft,
-    color: C.redX,
+  attribBadgeCell: { width: 26, display: "flex", justifyContent: "flex-end", flexShrink: 0, marginTop: 1 },
+  attribBadgeFace: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    background: C.blueSoft,
+    color: C.blue,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    flexShrink: 0,
+    fontSize: 8.5,
+    fontWeight: 800,
   },
+  attribItemText: { lineHeight: 1.4, transition: "color 0.12s" },
   themeText: {
     flex: 1,
     textAlign: "left",
@@ -1883,21 +1929,6 @@ const s = {
     fontWeight: 700,
     color: C.ink,
     padding: "6px 10px",
-  },
-  themeDelete: {
-    position: "absolute",
-    right: 4,
-    top: "50%",
-    transform: "translateY(-50%)",
-    width: 26,
-    height: 26,
-    borderRadius: "50%",
-    background: C.redSoft,
-    color: C.redX,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    transition: "opacity 0.12s, background 0.12s, color 0.12s",
   },
 
   /* share menu */
