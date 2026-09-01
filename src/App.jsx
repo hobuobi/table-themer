@@ -205,9 +205,24 @@ function abbrev(text, max = 34) {
   return t.length > max ? t.slice(0, max).trimEnd() + "…" : t;
 }
 
-// Custom drag image: a small inverted chip (dark blue, white text/icon)
-// with an abbreviated comment, used in place of the default row ghost.
-function setDragChip(e, text) {
+const DRAG_ICON = {
+  // link — used when dragging a comment to attribute it
+  attach:
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" ' +
+    'stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
+    '<line x1="8" x2="16" y1="12" y2="12"/></svg>',
+  // grip — used when dragging a theme row to reorder it
+  row:
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="#fff">' +
+    '<circle cx="9" cy="5" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="9" cy="19" r="1.6"/>' +
+    '<circle cx="15" cy="5" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="15" cy="19" r="1.6"/></svg>',
+};
+
+// Custom drag image: a small blue chip with an abbreviated label, shown
+// in place of the default element ghost. kind "attach" = dark blue +
+// link icon; kind "row" = primary blue + grip icon.
+function setDragChip(e, text, kind = "attach") {
   const chip = document.createElement("div");
   chip.style.cssText = [
     "position:fixed",
@@ -219,20 +234,16 @@ function setDragChip(e, text) {
     "max-width:260px",
     "padding:7px 11px",
     "border-radius:8px",
-    "background:#2C3781",
+    `background:${kind === "row" ? "#3B4DA6" : "#2C3781"}`,
     "color:#fff",
-    "font:600 12.5px/1.2 Inter,-apple-system,sans-serif",
+    "font:700 12.5px/1.2 Inter,-apple-system,sans-serif",
     "white-space:nowrap",
     "overflow:hidden",
     "box-shadow:0 8px 20px rgba(20,23,26,0.35)",
     "pointer-events:none",
     "z-index:9999",
   ].join(";");
-  chip.innerHTML =
-    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" ' +
-    'stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
-    '<line x1="8" x2="16" y1="12" y2="12"/></svg>';
+  chip.innerHTML = DRAG_ICON[kind] || DRAG_ICON.attach;
   const label = document.createElement("span");
   label.textContent = abbrev(text, 34);
   chip.appendChild(label);
@@ -635,22 +646,27 @@ function ThemeRow({
   theme,
   attributedComments,
   isOver,
+  insertLine,
+  mergeArmed,
   mobile,
   onChange,
   onDelete,
   onAttach,
   onDetach,
   onOver,
-  onThemeDragStart,
-  onThemeDragEnd,
-  onMergeCommentTheme,
   onGenerateAttributions,
+  onReorderStart,
+  onReorderOver,
+  onReorderEnd,
+  onMergeHere,
+  onMergeHover,
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
   const [generating, setGenerating] = useState(false);
+  const [pillOver, setPillOver] = useState(false);
   const inputRef = useRef(null);
-  const canDrag = theme.source === "COMMENT" && !!theme.sourceCommentId && !mobile && !editing;
+  const rowDraggable = !editing && !mobile;
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -658,6 +674,10 @@ function ThemeRow({
       inputRef.current.select();
     }
   }, [editing]);
+
+  useEffect(() => {
+    if (!mergeArmed) setPillOver(false);
+  }, [mergeArmed]);
 
   const startEdit = () => {
     setDraft(theme.text);
@@ -687,58 +707,49 @@ function ThemeRow({
   const count = attributedComments.length;
   const showList = editing && count > 0;
 
-  const dragKind = (e) => {
-    const types = e.dataTransfer.types || [];
-    if (types.includes("text/tt-comment-theme")) return "theme";
-    if (types.includes("text/tt-comment")) return "comment";
-    return null;
-  };
-
   return (
     <div
       className="tt-row tt-theme-row"
-      draggable={canDrag}
-      style={{ ...s.themeRow, ...(isOver ? s.themeRowOver : {}) }}
+      draggable={rowDraggable}
+      style={{
+        ...s.themeRow,
+        ...(isOver ? s.themeRowOver : {}),
+        ...(insertLine === "top" ? { boxShadow: `inset 0 3px 0 ${C.blue}` } : {}),
+        ...(insertLine === "bottom" ? { boxShadow: `inset 0 -3px 0 ${C.blue}` } : {}),
+      }}
       onDragStart={(e) => {
-        if (!canDrag) return;
-        e.dataTransfer.setData(
-          "text/tt-comment-theme",
-          JSON.stringify({ themeId: theme.id, commentId: theme.sourceCommentId })
-        );
+        if (!rowDraggable) return;
+        e.dataTransfer.setData("text/tt-theme-order", theme.id);
         e.dataTransfer.setData("text/plain", theme.text);
         e.dataTransfer.effectAllowed = "copyMove";
-        setDragChip(e, theme.text);
-        onThemeDragStart && onThemeDragStart();
+        setDragChip(e, theme.text, "row");
+        onReorderStart();
       }}
-      onDragEnd={() => onThemeDragEnd && onThemeDragEnd()}
+      onDragEnd={() => onReorderEnd()}
       onDragOver={(e) => {
-        const kind = dragKind(e);
-        if (!kind) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = kind === "theme" ? "move" : "copy";
-        onOver();
+        const types = e.dataTransfer.types || [];
+        if (types.includes("text/tt-comment")) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          onOver();
+          return;
+        }
+        if (types.includes("text/tt-theme-order")) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          const r = e.currentTarget.getBoundingClientRect();
+          onReorderOver(theme.id, e.clientY - r.top < r.height / 2);
+        }
       }}
       onDrop={(e) => {
         e.preventDefault();
         const commentId = e.dataTransfer.getData("text/tt-comment");
-        if (commentId) {
-          onAttach(commentId);
-          return;
-        }
-        const raw = e.dataTransfer.getData("text/tt-comment-theme");
-        if (raw) {
-          try {
-            const { themeId, commentId: cid } = JSON.parse(raw);
-            if (themeId && themeId !== theme.id) onMergeCommentTheme(themeId, cid);
-          } catch (_) {
-            /* ignore malformed payload */
-          }
-        }
+        if (commentId) onAttach(commentId);
       }}
     >
       <div
         className="tt-theme-main"
-        style={{ ...s.themeRowMain, cursor: canDrag ? "grab" : "pointer" }}
+        style={{ ...s.themeRowMain, cursor: rowDraggable ? "grab" : "pointer" }}
         onClick={() => {
           if (!editing) startEdit();
         }}
@@ -769,30 +780,67 @@ function ThemeRow({
             {theme.text}
           </span>
         )}
-        {count > 0 ? (
-          <span
-            className="tt-attrib-pill"
-            style={{ ...s.attribPill, ...(showList ? s.attribPillOn : {}) }}
-            title={`${count} attributed comment${count === 1 ? "" : "s"}`}
-          >
-            <MessageSquare size={11} strokeWidth={2.6} />
-            {count}
-          </span>
-        ) : (
-          <button
-            className="tt-attrib-gen"
-            style={s.attribGenPill}
-            disabled={generating}
-            onClick={(e) => {
-              e.stopPropagation();
-              runGenerateAttributions();
-            }}
-            title="Find comments for this theme"
-          >
-            <MessageSquare size={11} strokeWidth={2.6} />
-            {generating ? <Spinner size={10} color={C.green} /> : <Plus size={11} strokeWidth={3.2} />}
-          </button>
-        )}
+        <span style={s.pillWrap}>
+          {mergeArmed && (
+            <div
+              style={s.mergeZone}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "copy";
+                setPillOver(true);
+                onMergeHover(true);
+              }}
+              onDragLeave={() => {
+                setPillOver(false);
+                onMergeHover(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setPillOver(false);
+                onMergeHover(false);
+                onMergeHere();
+              }}
+            />
+          )}
+          {count > 0 ? (
+            <span
+              className="tt-attrib-pill"
+              style={{
+                ...s.attribPill,
+                ...(showList ? s.attribPillOn : {}),
+                ...(pillOver ? s.attribPillMerge : {}),
+              }}
+              title={
+                mergeArmed
+                  ? "Drop to merge into this theme"
+                  : `${count} attributed comment${count === 1 ? "" : "s"}`
+              }
+            >
+              <MessageSquare size={11} strokeWidth={2.6} />
+              {count}
+            </span>
+          ) : (
+            <button
+              className="tt-attrib-gen"
+              style={{ ...s.attribGenPill, ...(pillOver ? s.attribPillMerge : {}) }}
+              disabled={generating}
+              onClick={(e) => {
+                e.stopPropagation();
+                runGenerateAttributions();
+              }}
+              title={mergeArmed ? "Drop to merge into this theme" : "Find comments for this theme"}
+            >
+              <MessageSquare size={11} strokeWidth={2.6} />
+              {generating ? (
+                <Spinner size={10} color={C.green} />
+              ) : (
+                <Plus size={11} strokeWidth={3.2} />
+              )}
+            </button>
+          )}
+        </span>
       </div>
 
       {showList && (
@@ -1152,13 +1200,37 @@ export default function App() {
   const [genError, setGenError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
-  const [dragging, setDragging] = useState(false); // a comment / COMMENT-theme is being dragged
+  const [dragging, setDragging] = useState(false); // a comment is being dragged onto a theme
   const [overThemeId, setOverThemeId] = useState(null); // theme row currently under the drag
+  const [draggingId, setDraggingId] = useState(null); // theme row being reordered
+  const [dropIndex, setDropIndex] = useState(null); // where the dragged row would land (0..n)
+  const [mergeHovering, setMergeHovering] = useState(false); // over a row's merge zone
   const [toast, setToast] = useState("");
 
   const endDrag = useCallback(() => {
     setDragging(false);
     setOverThemeId(null);
+  }, []);
+
+  const draggingIdRef = useRef(null);
+  const dropIndexRef = useRef(null);
+  const lastReorderRef = useRef(null);
+  useEffect(() => {
+    draggingIdRef.current = draggingId;
+  }, [draggingId]);
+  useEffect(() => {
+    dropIndexRef.current = dropIndex;
+  }, [dropIndex]);
+  const reorderStart = useCallback((id) => {
+    lastReorderRef.current = null;
+    setDropIndex(null);
+    setDraggingId(id);
+  }, []);
+  const reorderEnd = useCallback(() => {
+    lastReorderRef.current = null;
+    setDropIndex(null);
+    setDraggingId(null);
+    setMergeHovering(false);
   }, []);
   // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
   // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
@@ -1221,6 +1293,7 @@ export default function App() {
   const comments = (state && state.comments[state.activeId]) || [];
   const themes = (state && state.themes[state.activeId]) || [];
   const candidates = (state && state.candidates[state.activeId]) || [];
+  const draggingIdTheme = draggingId ? themes.find((t) => t.id === draggingId) : null;
 
   const setThemes = useCallback((fn) => {
     setState((prev) => ({
@@ -1295,6 +1368,47 @@ export default function App() {
       )
     );
   const deleteTheme = (id) => setThemes((list) => list.filter((t) => t.id !== id));
+
+  // Track where the dragged row would land; commit only on drop.
+  const reorderOver = (rowId, before) => {
+    const key = `${rowId}:${before ? 1 : 0}`;
+    if (lastReorderRef.current === key) return;
+    lastReorderRef.current = key;
+    const rowIdx = themes.findIndex((t) => t.id === rowId);
+    if (rowIdx >= 0) setDropIndex(before ? rowIdx : rowIdx + 1);
+  };
+
+  const reorderDrop = () => {
+    const to0 = dropIndexRef.current;
+    const dragId = draggingIdRef.current;
+    setDraggingId(null);
+    setDropIndex(null);
+    lastReorderRef.current = null;
+    if (to0 == null || !dragId) return;
+    setThemes((list) => {
+      const from = list.findIndex((t) => t.id === dragId);
+      if (from < 0) return list;
+      let to = to0;
+      if (from < to) to -= 1;
+      if (to === from) return list;
+      const next = [...list];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  // Dropping a COMMENT theme onto another theme's comment pill folds it in.
+  const mergeFromDragTo = (targetId) => {
+    const srcId = draggingIdRef.current;
+    setDraggingId(null);
+    setDropIndex(null);
+    setMergeHovering(false);
+    lastReorderRef.current = null;
+    const src = themes.find((t) => t.id === srcId);
+    if (!src || src.source !== "COMMENT" || !src.sourceCommentId || srcId === targetId) return;
+    mergeCommentTheme(srcId, targetId, src.sourceCommentId);
+  };
 
   // Ask the model which comments support a theme that has none attributed yet.
   const generateAttributions = async (themeId) => {
@@ -1635,8 +1749,21 @@ export default function App() {
 
         <div
           style={s.themeList}
+          onDragOver={(e) => {
+            if ((e.dataTransfer.types || []).includes("text/tt-theme-order")) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            if ((e.dataTransfer.types || []).includes("text/tt-theme-order")) {
+              e.preventDefault();
+              reorderDrop();
+            }
+          }}
           onDragLeave={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget)) setOverThemeId(null);
+            if (!e.currentTarget.contains(e.relatedTarget)) {
+              setOverThemeId(null);
+              setDropIndex(null);
+              setMergeHovering(false);
+            }
           }}
         >
           {themes.length === 0 && (
@@ -1646,26 +1773,47 @@ export default function App() {
                 : "Write a theme above, click a comment on the left, or hit Generate."}
             </div>
           )}
-          {themes.map((t) => (
+          {(() => {
+            const srcIdx = draggingId ? themes.findIndex((t) => t.id === draggingId) : -1;
+            const noop =
+              dropIndex != null && srcIdx >= 0 && (dropIndex === srcIdx || dropIndex === srcIdx + 1);
+            const line = noop || mergeHovering ? null : dropIndex;
+            return themes.map((t, i) => (
             <ThemeRow
               key={t.id}
               theme={t}
               mobile={mobile}
               attributedComments={attributedCommentsFor(t)}
               isOver={dragging && overThemeId === t.id}
+              insertLine={
+                line == null
+                  ? null
+                  : line === i
+                  ? "top"
+                  : line === themes.length && i === themes.length - 1
+                  ? "bottom"
+                  : null
+              }
+              mergeArmed={
+                !!draggingIdTheme &&
+                draggingIdTheme.source === "COMMENT" &&
+                !!draggingIdTheme.sourceCommentId &&
+                draggingId !== t.id
+              }
               onChange={(text) => changeTheme(t.id, text)}
               onDelete={() => deleteTheme(t.id)}
               onAttach={(commentId) => attributeComment(t.id, commentId)}
               onDetach={(commentId) => detachComment(t.id, commentId)}
               onOver={() => setOverThemeId(t.id)}
-              onThemeDragStart={() => setDragging(true)}
-              onThemeDragEnd={endDrag}
-              onMergeCommentTheme={(sourceThemeId, commentId) =>
-                mergeCommentTheme(sourceThemeId, t.id, commentId)
-              }
               onGenerateAttributions={() => generateAttributions(t.id)}
+              onReorderStart={() => reorderStart(t.id)}
+              onReorderOver={reorderOver}
+              onReorderEnd={reorderEnd}
+              onMergeHere={() => mergeFromDragTo(t.id)}
+              onMergeHover={setMergeHovering}
             />
-          ))}
+          ));
+          })()}
         </div>
       </div>
     </main>
@@ -2002,6 +2150,7 @@ const s = {
     alignItems: "center",
     gap: 14,
     padding: "18px 12px",
+    position: "relative",
   },
   themeRowOver: {
     background: "rgba(88,197,255,0.03)",
@@ -2020,6 +2169,14 @@ const s = {
     background: C.blueSoft,
   },
   attribPillOn: { color: "#fff", background: C.blue },
+  attribPillMerge: {
+    color: "#fff",
+    background: C.blue,
+    boxShadow: `0 0 0 3px ${C.blueSoft}`,
+    transform: "scale(1.08)",
+  },
+  pillWrap: { position: "relative", display: "inline-flex", flexShrink: 0 },
+  mergeZone: { position: "absolute", left: -7, right: -7, top: -22, bottom: -22, zIndex: 3 },
   attribGenPill: {
     display: "inline-flex",
     alignItems: "center",
