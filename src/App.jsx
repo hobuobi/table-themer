@@ -16,6 +16,8 @@ import {
   Pause,
   Square,
   MessageSquareText,
+  MessageSquare,
+  Plus,
 } from "lucide-react";
 import { buildSeedState, SIM_WINDOW_MS } from "./seedData.js";
 import { uid } from "./uid.js";
@@ -49,10 +51,18 @@ const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
-body { margin: 0; background: ${C.bg}; overflow-x: hidden; }
+body {
+  margin: 0;
+  background: ${C.bg};
+  overflow-x: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: ${C.ink};
+}
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
 input, textarea { font: inherit; }
 ::selection { background: ${C.blueSoft}; }
+[role="button"]:focus { outline: none; }
+[role="button"]:focus-visible { outline: 2px solid ${C.blue}; outline-offset: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes ttFlash {
   0% { background-color: #FFFFFF; }
@@ -66,8 +76,19 @@ input, textarea { font: inherit; }
 .tt-hover { opacity: 0 !important; pointer-events: none; }
 .tt-row:hover .tt-hover { opacity: 1 !important; pointer-events: auto; }
 .tt-comment:hover { background: ${C.lineSoft}; }
-.tt-theme-text:hover { color: ${C.blue} !important; }
-.tt-theme-x:hover { background: ${C.redX} !important; color: #fff !important; }
+.tt-theme-row:hover { background: rgba(88,197,255,0.05); }
+.tt-theme-main:hover .tt-theme-text { color: ${C.blue} !important; }
+.tt-theme-main:hover .tt-attrib-pill { background: ${C.blue} !important; color: #fff !important; }
+.tt-attrib-gen:hover { background: ${C.green} !important; color: #fff !important; }
+.tt-attrib-text:hover { color: ${C.blue}; }
+.tt-badge-del, .tt-abadge-del { position: relative; display: inline-flex; flex-shrink: 0; }
+.tt-badge-x, .tt-abadge-x {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: ${C.redX}; opacity: 0; transition: opacity 0.1s;
+}
+.tt-badge-x { border-radius: 6px; }
+.tt-abadge-x { border-radius: 4px; }
+.tt-badge-del:hover .tt-badge-x, .tt-abadge-del:hover .tt-abadge-x { opacity: 1; }
 .tt-present-row:hover .tt-present-text { color: ${C.blue}; }
 @media (hover: none), (max-width: 768px) {
   .tt-hover { opacity: 1 !important; pointer-events: auto !important; }
@@ -179,6 +200,47 @@ function download(name, text, type = "text/plain") {
 
 const SOURCE_LABEL = { AI: "AI", MANUAL: "Manual", COMMENT: "Comment" };
 
+function abbrev(text, max = 34) {
+  const t = (text || "").trim();
+  return t.length > max ? t.slice(0, max).trimEnd() + "…" : t;
+}
+
+// Custom drag image: a small inverted chip (dark blue, white text/icon)
+// with an abbreviated comment, used in place of the default row ghost.
+function setDragChip(e, text) {
+  const chip = document.createElement("div");
+  chip.style.cssText = [
+    "position:fixed",
+    "top:-1000px",
+    "left:-1000px",
+    "display:flex",
+    "align-items:center",
+    "gap:6px",
+    "max-width:260px",
+    "padding:7px 11px",
+    "border-radius:8px",
+    "background:#2C3781",
+    "color:#fff",
+    "font:600 12.5px/1.2 Inter,-apple-system,sans-serif",
+    "white-space:nowrap",
+    "overflow:hidden",
+    "box-shadow:0 8px 20px rgba(20,23,26,0.35)",
+    "pointer-events:none",
+    "z-index:9999",
+  ].join(";");
+  chip.innerHTML =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" ' +
+    'stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
+    '<line x1="8" x2="16" y1="12" y2="12"/></svg>';
+  const label = document.createElement("span");
+  label.textContent = abbrev(text, 34);
+  chip.appendChild(label);
+  document.body.appendChild(chip);
+  e.dataTransfer.setDragImage(chip, 14, 16);
+  setTimeout(() => chip.remove(), 0);
+}
+
 /* ---------------- atoms ---------------- */
 
 function SourceBadge({ source, size = 26 }) {
@@ -209,7 +271,7 @@ function SourceBadge({ source, size = 26 }) {
   );
 }
 
-function Spinner({ size = 18 }) {
+function Spinner({ size = 18, color = C.blue }) {
   return (
     <span
       style={{
@@ -217,7 +279,7 @@ function Spinner({ size = 18 }) {
         height: size,
         borderRadius: "50%",
         border: `2.5px solid ${C.line}`,
-        borderTopColor: C.blue,
+        borderTopColor: color,
         display: "inline-block",
         animation: "spin 0.8s linear infinite",
       }}
@@ -236,13 +298,35 @@ function fmtClock(ms) {
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-function CommentItem({ c, onUseComment }) {
+function CommentItem({ c, onUseComment, onDragStartComment, onDragEndComment, draggable }) {
+  const canDrag = !!draggable && !!onDragStartComment;
   return (
-    <button
+    <div
       className="tt-comment tt-row"
-      style={s.commentRow}
+      role="button"
+      tabIndex={0}
+      style={{ ...s.commentRow, ...(canDrag ? { cursor: "grab" } : { cursor: "pointer" }) }}
+      draggable={canDrag}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/tt-comment", c.id);
+        e.dataTransfer.setData("text/plain", c.text);
+        e.dataTransfer.effectAllowed = "copyMove";
+        setDragChip(e, c.text);
+        onDragStartComment && onDragStartComment(c.id);
+      }}
+      onDragEnd={() => onDragEndComment && onDragEndComment()}
       onClick={() => onUseComment(c)}
-      title="Add as a theme"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onUseComment(c);
+        }
+      }}
+      title={
+        canDrag
+          ? "Click to add as a theme · drag onto a theme to attribute"
+          : "Tap to add as a theme"
+      }
     >
       <span style={s.commentBadge}>T{c.tableNum}</span>
       <span style={s.commentText}>{c.text}</span>
@@ -252,11 +336,21 @@ function CommentItem({ c, onUseComment }) {
         color={C.faint}
         style={{ ...s.commentArrow, opacity: 0 }}
       />
-    </button>
+    </div>
   );
 }
 
-function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mobile, onClose }) {
+function CommentsPanel({
+  comments,
+  onUseComment,
+  onCopyAll,
+  sim,
+  simControls,
+  mobile,
+  onClose,
+  onCommentDragStart,
+  onCommentDragEnd,
+}) {
   const simActive = !!sim;
   const done = simActive && sim.elapsed >= sim.duration;
   const revealed = simActive
@@ -340,7 +434,16 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mo
           (chrono.length === 0 ? (
             <div style={s.simTableEmpty}>No comments yet</div>
           ) : (
-            chrono.map((c) => <CommentItem key={c.id} c={c} onUseComment={onUseComment} />)
+            chrono.map((c) => (
+              <CommentItem
+                key={c.id}
+                c={c}
+                onUseComment={onUseComment}
+                onDragStartComment={onCommentDragStart}
+                onDragEndComment={onCommentDragEnd}
+                draggable={!mobile}
+              />
+            ))
           ))}
 
         {mode === "grouped" &&
@@ -377,7 +480,14 @@ function CommentsPanel({ comments, onUseComment, onCopyAll, sim, simControls, mo
                   <div style={s.simTableEmpty}>No comments yet</div>
                 )}
                 {shown.map((c) => (
-                  <CommentItem key={c.id} c={c} onUseComment={onUseComment} />
+                  <CommentItem
+                    key={c.id}
+                    c={c}
+                    onUseComment={onUseComment}
+                    onDragStartComment={onCommentDragStart}
+                    onDragEndComment={onCommentDragEnd}
+                    draggable={!mobile}
+                  />
                 ))}
                 {hidden > 0 && (
                   <button style={s.moreRow} onClick={() => setExpandedNum(g.num)}>
@@ -483,10 +593,64 @@ function ThemeComposer({ onAdd }) {
 
 /* ---------------- theme row (WYSIWYG) ---------------- */
 
-function ThemeRow({ theme, onChange, onDelete }) {
+// The theme's source badge doubles as its delete control: hover turns
+// it into a red square with a white X.
+function ThemeBadgeButton({ source, onDelete }) {
+  return (
+    <button
+      className="tt-badge-del"
+      onClick={(e) => {
+        e.stopPropagation();
+        onDelete();
+      }}
+      title="Remove theme"
+    >
+      <SourceBadge source={source} size={26} />
+      <span className="tt-badge-x">
+        <X size={14} color="#fff" strokeWidth={3} />
+      </span>
+    </button>
+  );
+}
+
+// Attributed-comment badge (light blue / dark blue "T{n}"); hover to
+// detach, mirroring the theme badge.
+function AttribBadgeButton({ tableNum, onDetach }) {
+  return (
+    <button
+      className="tt-abadge-del"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onDetach}
+      title="Remove attribution"
+    >
+      <span style={s.attribBadgeFace}>T{tableNum}</span>
+      <span className="tt-abadge-x">
+        <X size={11} color="#fff" strokeWidth={3} />
+      </span>
+    </button>
+  );
+}
+
+function ThemeRow({
+  theme,
+  attributedComments,
+  isOver,
+  mobile,
+  onChange,
+  onDelete,
+  onAttach,
+  onDetach,
+  onOver,
+  onThemeDragStart,
+  onThemeDragEnd,
+  onMergeCommentTheme,
+  onGenerateAttributions,
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(theme.text);
+  const [generating, setGenerating] = useState(false);
   const inputRef = useRef(null);
+  const canDrag = theme.source === "COMMENT" && !!theme.sourceCommentId && !mobile && !editing;
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -500,6 +664,16 @@ function ThemeRow({ theme, onChange, onDelete }) {
     setEditing(true);
   };
 
+  const runGenerateAttributions = async () => {
+    if (generating) return;
+    setGenerating(true);
+    try {
+      await onGenerateAttributions();
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const commit = () => {
     setEditing(false);
     const v = draft.trim().slice(0, MAX_THEME_LEN);
@@ -510,40 +684,131 @@ function ThemeRow({ theme, onChange, onDelete }) {
     if (v !== theme.text) onChange(v);
   };
 
+  const count = attributedComments.length;
+  const showList = editing && count > 0;
+
+  const dragKind = (e) => {
+    const types = e.dataTransfer.types || [];
+    if (types.includes("text/tt-comment-theme")) return "theme";
+    if (types.includes("text/tt-comment")) return "comment";
+    return null;
+  };
+
   return (
-    <div className="tt-row" style={s.themeRow}>
-      <SourceBadge source={theme.source} />
-      {editing ? (
-        <input
-          ref={inputRef}
-          value={draft}
-          maxLength={MAX_THEME_LEN}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            } else if (e.key === "Escape") {
-              setDraft(theme.text);
-              setEditing(false);
-            }
-          }}
-          style={s.themeEditInput}
-        />
-      ) : (
-        <button className="tt-theme-text" style={s.themeText} onClick={startEdit} title="Click to edit">
-          {theme.text}
-        </button>
-      )}
-      <button
-        className="tt-hover tt-theme-x"
-        style={{ ...s.themeDelete, opacity: 0 }}
-        onClick={onDelete}
-        title="Delete theme"
+    <div
+      className="tt-row tt-theme-row"
+      draggable={canDrag}
+      style={{ ...s.themeRow, ...(isOver ? s.themeRowOver : {}) }}
+      onDragStart={(e) => {
+        if (!canDrag) return;
+        e.dataTransfer.setData(
+          "text/tt-comment-theme",
+          JSON.stringify({ themeId: theme.id, commentId: theme.sourceCommentId })
+        );
+        e.dataTransfer.setData("text/plain", theme.text);
+        e.dataTransfer.effectAllowed = "copyMove";
+        setDragChip(e, theme.text);
+        onThemeDragStart && onThemeDragStart();
+      }}
+      onDragEnd={() => onThemeDragEnd && onThemeDragEnd()}
+      onDragOver={(e) => {
+        const kind = dragKind(e);
+        if (!kind) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = kind === "theme" ? "move" : "copy";
+        onOver();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const commentId = e.dataTransfer.getData("text/tt-comment");
+        if (commentId) {
+          onAttach(commentId);
+          return;
+        }
+        const raw = e.dataTransfer.getData("text/tt-comment-theme");
+        if (raw) {
+          try {
+            const { themeId, commentId: cid } = JSON.parse(raw);
+            if (themeId && themeId !== theme.id) onMergeCommentTheme(themeId, cid);
+          } catch (_) {
+            /* ignore malformed payload */
+          }
+        }
+      }}
+    >
+      <div
+        className="tt-theme-main"
+        style={{ ...s.themeRowMain, cursor: canDrag ? "grab" : "pointer" }}
+        onClick={() => {
+          if (!editing) startEdit();
+        }}
+        title={editing ? undefined : "Click to edit"}
       >
-        <X size={13} strokeWidth={2.6} />
-      </button>
+        <ThemeBadgeButton source={theme.source} onDelete={onDelete} />
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            maxLength={MAX_THEME_LEN}
+            onChange={(e) => setDraft(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+              } else if (e.key === "Escape") {
+                setDraft(theme.text);
+                setEditing(false);
+              }
+            }}
+            style={s.themeEditInput}
+          />
+        ) : (
+          <span className="tt-theme-text" style={s.themeText}>
+            {theme.text}
+          </span>
+        )}
+        {count > 0 ? (
+          <span
+            className="tt-attrib-pill"
+            style={{ ...s.attribPill, ...(showList ? s.attribPillOn : {}) }}
+            title={`${count} attributed comment${count === 1 ? "" : "s"}`}
+          >
+            <MessageSquare size={11} strokeWidth={2.6} />
+            {count}
+          </span>
+        ) : (
+          <button
+            className="tt-attrib-gen"
+            style={s.attribGenPill}
+            disabled={generating}
+            onClick={(e) => {
+              e.stopPropagation();
+              runGenerateAttributions();
+            }}
+            title="Find comments for this theme"
+          >
+            <MessageSquare size={11} strokeWidth={2.6} />
+            {generating ? <Spinner size={10} color={C.green} /> : <Plus size={11} strokeWidth={3.2} />}
+          </button>
+        )}
+      </div>
+
+      {showList && (
+        <div style={s.attribList}>
+          {attributedComments.map((c) => (
+            <div key={c.id} style={s.attribItem}>
+              <span style={s.attribBadgeCell}>
+                <AttribBadgeButton tableNum={c.tableNum} onDetach={() => onDetach(c.id)} />
+              </span>
+              <span className="tt-attrib-text" style={s.attribItemText}>
+                {c.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -574,7 +839,77 @@ function ShareMenu({ onPresent, onReport, onJson, onClose }) {
 
 /* ---------------- generate modal ---------------- */
 
-function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAll, onAccept, onClose }) {
+function CandidateRow({ c, isOn, sims, comments, onToggle }) {
+  const [open, setOpen] = useState(false);
+  const count = comments.length;
+  return (
+    <div style={s.candidateRow}>
+      <div
+        className="tt-theme-main"
+        style={{ ...s.candidateMain, cursor: count ? "pointer" : "default" }}
+        onClick={() => count && setOpen((v) => !v)}
+      >
+        <SourceBadge source="AI" size={26} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="tt-theme-text" style={s.candidateText}>
+            {c.text}
+          </div>
+          {sims.map((t) => (
+            <div key={t.id} style={s.similarNote}>
+              <CornerDownRight size={12} color={C.mute} />
+              Similar to <span style={{ color: C.blue, fontWeight: 700 }}>#{t.index}</span>{" "}
+              <span style={{ color: C.mute }}>({t.text})</span>
+            </div>
+          ))}
+        </div>
+        {count > 0 && (
+          <span
+            className="tt-attrib-pill"
+            style={{ ...s.attribPill, ...(open ? s.attribPillOn : {}) }}
+            title={`${count} comment${count === 1 ? "" : "s"}`}
+          >
+            <MessageSquare size={11} strokeWidth={2.6} />
+            {count}
+          </span>
+        )}
+        <button
+          style={isOn ? s.checkOn : s.checkOff}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+          title={isOn ? "Selected" : "Not selected"}
+        >
+          {isOn && <Check size={14} color="#fff" strokeWidth={3} />}
+        </button>
+      </div>
+      {open && count > 0 && (
+        <div style={s.attribList}>
+          {comments.map((cm) => (
+            <div key={cm.id} style={s.attribItem}>
+              <span style={s.attribBadgeCell}>
+                <span style={s.attribBadgeFace}>T{cm.tableNum}</span>
+              </span>
+              <span style={s.attribItemText}>{cm.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GenerateModal({
+  status,
+  error,
+  candidates,
+  themes,
+  resolveComments,
+  onRefresh,
+  onClearAll,
+  onAccept,
+  onClose,
+}) {
   const mobile = useIsMobile();
   const themeById = useMemo(() => {
     const m = new Map();
@@ -674,35 +1009,20 @@ function GenerateModal({ status, error, candidates, themes, onRefresh, onClearAl
             </div>
           )}
 
-          {ordered.map((c) => {
-            const sims = (c.similarThemeIds || []).map((id) => themeById.get(id)).filter(Boolean);
-            const isOn = selected.has(c.id);
-            return (
-              <div
-                key={c.id}
-                style={{ ...s.candidateRow, cursor: "pointer" }}
-                onClick={() => toggle(c.id)}
-              >
-                <SourceBadge source="AI" size={24} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={s.candidateText}>{c.text}</div>
-                  {sims.map((t) => (
-                    <div key={t.id} style={s.similarNote}>
-                      <CornerDownRight size={12} color={C.mute} />
-                      Similar to <span style={{ color: C.blue, fontWeight: 700 }}>#{t.index}</span>{" "}
-                      <span style={{ color: C.mute }}>({t.text})</span>
-                    </div>
-                  ))}
-                </div>
-                <span
-                  style={isOn ? s.checkOn : s.checkOff}
-                  title={isOn ? "Selected" : "Not selected"}
-                >
-                  {isOn && <Check size={14} color="#fff" strokeWidth={3} />}
-                </span>
-              </div>
-            );
-          })}
+          {ordered.map((c) => (
+            <CandidateRow
+              key={c.id}
+              c={c}
+              isOn={selected.has(c.id)}
+              sims={(c.similarThemeIds || []).map((id) => themeById.get(id)).filter(Boolean)}
+              comments={resolveComments(
+                c.representativeCommentIds && c.representativeCommentIds.length
+                  ? c.representativeCommentIds
+                  : c.informingCommentIds || []
+              )}
+              onToggle={() => toggle(c.id)}
+            />
+          ))}
         </div>
       </div>
     </div>
@@ -832,7 +1152,14 @@ export default function App() {
   const [genError, setGenError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
+  const [dragging, setDragging] = useState(false); // a comment / COMMENT-theme is being dragged
+  const [overThemeId, setOverThemeId] = useState(null); // theme row currently under the drag
   const [toast, setToast] = useState("");
+
+  const endDrag = useCallback(() => {
+    setDragging(false);
+    setOverThemeId(null);
+  }, []);
   // Demo simulator: replays the active question's comments over SIM_WINDOW_MS.
   // sim = { status: "running" | "paused", speed: 1 | 2, anchorTime, anchorElapsed }
   const [sim, setSim] = useState(null);
@@ -914,16 +1241,25 @@ export default function App() {
     return m;
   }, [comments]);
 
+  // Comments manually (or AI-) attributed to a theme — drives the row's
+  // link pill and drag-drop attribution.
+  const attributedCommentsFor = useCallback(
+    (theme) => (theme.informingCommentIds || []).map((id) => commentById.get(id)).filter(Boolean),
+    [commentById]
+  );
+
+  // Everything associated with a theme (origin comment + attributions),
+  // for the report / JSON export.
   const commentsForTheme = useCallback(
     (theme) => {
-      if (theme.source === "COMMENT") {
-        const c = commentById.get(theme.sourceCommentId);
-        return c ? [c] : [];
-      }
-      if (theme.source === "AI") {
-        return (theme.informingCommentIds || []).map((id) => commentById.get(id)).filter(Boolean);
-      }
-      return [];
+      const ids = [];
+      if (theme.source === "COMMENT" && theme.sourceCommentId) ids.push(theme.sourceCommentId);
+      (theme.informingCommentIds || []).forEach((id) => ids.push(id));
+      const seen = new Set();
+      return ids
+        .filter((id) => !seen.has(id) && seen.add(id))
+        .map((id) => commentById.get(id))
+        .filter(Boolean);
     },
     [commentById]
   );
@@ -959,6 +1295,106 @@ export default function App() {
       )
     );
   const deleteTheme = (id) => setThemes((list) => list.filter((t) => t.id !== id));
+
+  // Ask the model which comments support a theme that has none attributed yet.
+  const generateAttributions = async (themeId) => {
+    const theme = themes.find((t) => t.id === themeId);
+    if (!theme || comments.length === 0) return;
+    try {
+      const res = await fetch("/api/attribute-theme", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mainQuestion: active.mainQuestion,
+          themeText: theme.text,
+          comments: comments.map((c, i) => ({ id: String(i), table: c.tableName, text: c.text })),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Request failed");
+      }
+      const data = await res.json();
+      const reps = [
+        ...new Set(
+          (data.representativeCommentIds || [])
+            .map((i) => comments[Number(i)]?.id)
+            .filter(Boolean)
+        ),
+      ].filter((id) => id !== theme.sourceCommentId);
+
+      if (reps.length === 0) {
+        flash("No matching comments found");
+        return;
+      }
+      // Match an accepted AI theme: same list in both fields.
+      setThemes((list) =>
+        list.map((t) =>
+          t.id === themeId
+            ? { ...t, informingCommentIds: reps, representativeCommentIds: reps }
+            : t
+        )
+      );
+      flash(`Attributed ${reps.length} comment${reps.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      console.error(e);
+      flash("Couldn't generate attributions");
+    }
+  };
+
+  const attributeComment = (themeId, commentId) => {
+    if (!commentById.has(commentId)) return;
+    let already = false;
+    setThemes((list) =>
+      list.map((t) => {
+        if (t.id !== themeId) return t;
+        const ids = t.informingCommentIds || [];
+        if (ids.includes(commentId) || t.sourceCommentId === commentId) {
+          already = true;
+          return t;
+        }
+        return { ...t, informingCommentIds: [...ids, commentId] };
+      })
+    );
+    const th = themes.find((t) => t.id === themeId);
+    flash(already ? "Already attributed" : `Attributed to “${th ? th.text : "theme"}”`);
+    endDrag();
+  };
+
+  const detachComment = (themeId, commentId) =>
+    setThemes((list) =>
+      list.map((t) => {
+        if (t.id !== themeId) return t;
+        const next = {
+          ...t,
+          informingCommentIds: (t.informingCommentIds || []).filter((id) => id !== commentId),
+        };
+        if (t.source === "COMMENT" && t.sourceCommentId === commentId) {
+          next.source = "MANUAL";
+          next.sourceCommentId = null;
+        }
+        return next;
+      })
+    );
+
+  // Drag a COMMENT theme onto another theme: fold its comment into the
+  // target's attributions and drop the standalone COMMENT theme.
+  const mergeCommentTheme = (sourceThemeId, targetThemeId, commentId) => {
+    if (sourceThemeId === targetThemeId) return;
+    const target = themes.find((t) => t.id === targetThemeId);
+    setThemes((list) =>
+      list
+        .map((t) => {
+          if (t.id !== targetThemeId || !commentId || !commentById.has(commentId)) return t;
+          const ids = t.informingCommentIds || [];
+          if (ids.includes(commentId) || t.sourceCommentId === commentId) return t;
+          return { ...t, informingCommentIds: [...ids, commentId] };
+        })
+        .filter((t) => t.id !== sourceThemeId)
+    );
+    flash(`Merged into “${target ? target.text : "theme"}”`);
+    endDrag();
+  };
 
   /* --- generation --- */
   const runGenerate = useCallback(async () => {
@@ -1127,6 +1563,8 @@ export default function App() {
       simControls={simControls}
       mobile={mobile}
       onClose={() => setCommentsOpen(false)}
+      onCommentDragStart={() => setDragging(true)}
+      onCommentDragEnd={endDrag}
     />
   );
 
@@ -1195,7 +1633,12 @@ export default function App() {
           </div>
         </div>
 
-        <div style={s.themeList}>
+        <div
+          style={s.themeList}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) setOverThemeId(null);
+          }}
+        >
           {themes.length === 0 && (
             <div style={s.listEmpty}>
               {mobile
@@ -1207,8 +1650,20 @@ export default function App() {
             <ThemeRow
               key={t.id}
               theme={t}
+              mobile={mobile}
+              attributedComments={attributedCommentsFor(t)}
+              isOver={dragging && overThemeId === t.id}
               onChange={(text) => changeTheme(t.id, text)}
               onDelete={() => deleteTheme(t.id)}
+              onAttach={(commentId) => attributeComment(t.id, commentId)}
+              onDetach={(commentId) => detachComment(t.id, commentId)}
+              onOver={() => setOverThemeId(t.id)}
+              onThemeDragStart={() => setDragging(true)}
+              onThemeDragEnd={endDrag}
+              onMergeCommentTheme={(sourceThemeId, commentId) =>
+                mergeCommentTheme(sourceThemeId, t.id, commentId)
+              }
+              onGenerateAttributions={() => generateAttributions(t.id)}
             />
           ))}
         </div>
@@ -1244,6 +1699,7 @@ export default function App() {
           error={genError}
           candidates={candidates}
           themes={themes}
+          resolveComments={(ids) => (ids || []).map((id) => commentById.get(id)).filter(Boolean)}
           onRefresh={runGenerate}
           onClearAll={() => setCandidates(() => [])}
           onAccept={acceptCandidates}
@@ -1539,13 +1995,70 @@ const s = {
   themeList: { marginTop: 8 },
   listEmpty: { padding: "40px 0", color: C.faint, fontSize: 14 },
   themeRow: {
+    borderBottom: `1px solid ${C.line}`,
+  },
+  themeRowMain: {
     display: "flex",
     alignItems: "center",
     gap: 14,
-    padding: "18px 40px 18px 0",
-    borderBottom: `1px solid ${C.line}`,
-    position: "relative",
+    padding: "18px 12px",
   },
+  themeRowOver: {
+    background: "rgba(88,197,255,0.03)",
+    boxShadow: "inset 0 1px 0 #58C5FF, inset 0 -1px 0 #58C5FF",
+  },
+  attribPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    flexShrink: 0,
+    padding: "3px 9px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 800,
+    color: C.blue,
+    background: C.blueSoft,
+  },
+  attribPillOn: { color: "#fff", background: C.blue },
+  attribGenPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    flexShrink: 0,
+    padding: "3px 9px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 800,
+    color: C.green,
+    background: C.greenSoft,
+  },
+  attribList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 9,
+    padding: "0 12px 16px 12px",
+  },
+  attribItem: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 12,
+    fontSize: 13,
+    color: C.body,
+  },
+  attribBadgeCell: { width: 26, display: "flex", justifyContent: "flex-end", flexShrink: 0, marginTop: 1 },
+  attribBadgeFace: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    background: C.blueSoft,
+    color: C.blue,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 8.5,
+    fontWeight: 800,
+  },
+  attribItemText: { lineHeight: 1.4, transition: "color 0.12s" },
   themeText: {
     flex: 1,
     textAlign: "left",
@@ -1565,21 +2078,6 @@ const s = {
     fontWeight: 700,
     color: C.ink,
     padding: "6px 10px",
-  },
-  themeDelete: {
-    position: "absolute",
-    right: 4,
-    top: "50%",
-    transform: "translateY(-50%)",
-    width: 26,
-    height: 26,
-    borderRadius: "50%",
-    background: C.redSoft,
-    color: C.redX,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    transition: "opacity 0.12s, background 0.12s, color 0.12s",
   },
 
   /* share menu */
@@ -1700,14 +2198,21 @@ const s = {
     color: C.mute,
     fontSize: 13.5,
   },
-  candidateRow: {
+  candidateRow: { borderBottom: `1px solid ${C.line}` },
+  candidateMain: {
     display: "flex",
     alignItems: "flex-start",
     gap: 12,
     padding: "16px 4px",
-    borderBottom: `1px solid ${C.line}`,
   },
-  candidateText: { fontSize: 15.5, fontWeight: 700, color: C.ink, lineHeight: 1.3, letterSpacing: "-0.01em" },
+  candidateText: {
+    fontSize: 15.5,
+    fontWeight: 700,
+    color: C.ink,
+    lineHeight: 1.3,
+    letterSpacing: "-0.01em",
+    transition: "color 0.12s",
+  },
   similarNote: { display: "flex", alignItems: "center", gap: 5, marginTop: 5, fontSize: 12, color: C.body },
   checkOn: {
     width: 24,
