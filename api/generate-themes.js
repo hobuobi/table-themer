@@ -17,7 +17,13 @@ export default async function handler(req, res) {
     comments,
     existingThemes = [],
     previousCandidates = [],
+    customInstructions = "",
   } = req.body || {};
+
+  // Free-text steer for the model (output language, focus, breadth, …).
+  // Cap it so it can't crowd out the comments or the format contract.
+  const safeInstructions =
+    typeof customInstructions === "string" ? customInstructions.slice(0, 2000) : "";
 
   if (!mainQuestion || !Array.isArray(comments) || comments.length === 0) {
     res
@@ -31,6 +37,7 @@ export default async function handler(req, res) {
     comments,
     existingThemes,
     previousCandidates,
+    customInstructions: safeInstructions,
   });
 
   try {
