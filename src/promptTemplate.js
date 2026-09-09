@@ -9,6 +9,7 @@ export function buildThemePrompt({
   comments,
   existingThemes = [],
   previousCandidates = [],
+  customInstructions = "",
 }) {
   const parts = [];
 
@@ -36,6 +37,16 @@ export function buildThemePrompt({
         `the comments, revise wording where it helps, and drop or replace any the data no longer backs. ` +
         `If the overall taxonomy has shifted, restructure freely:\n` +
         JSON.stringify(previousCandidates)
+    );
+  }
+
+  if (customInstructions && customInstructions.trim()) {
+    parts.push(
+      `Additional instructions from the facilitator. Apply these to the language, focus, ` +
+        `breadth, and level of detail of the themes. They refine the task but do NOT override ` +
+        `the structural requirements or the output format described below — still return every ` +
+        `field, in the exact JSON shape specified:\n` +
+        customInstructions.trim()
     );
   }
 

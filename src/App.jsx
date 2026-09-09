@@ -97,6 +97,8 @@ input, textarea { font: inherit; }
 
 const MAX_THEME_LEN = 100;
 const STORAGE_KEY = "tt:v2";
+const GEN_INSTRUCTIONS_KEY = "tt:genInstructions";
+const MAX_GEN_INSTRUCTIONS = 2000;
 const MOBILE_Q = "(max-width: 768px)";
 
 function useIsMobile() {
@@ -953,12 +955,15 @@ function GenerateModal({
   candidates,
   themes,
   resolveComments,
+  instructions,
+  onInstructionsChange,
   onRefresh,
   onClearAll,
   onAccept,
   onClose,
 }) {
   const mobile = useIsMobile();
+  const [showInstructions, setShowInstructions] = useState(() => !!instructions);
   const themeById = useMemo(() => {
     const m = new Map();
     themes.forEach((t, i) => m.set(t.id, { ...t, index: i + 1 }));
@@ -1031,6 +1036,34 @@ function GenerateModal({
               <ArrowRight size={14} />
             </button>
           </div>
+        </div>
+
+        <div style={s.genInstructionsWrap}>
+          <button
+            style={s.genInstructionsToggle}
+            onClick={() => setShowInstructions((v) => !v)}
+          >
+            <ChevronDown
+              size={13}
+              style={{ transform: showInstructions ? "none" : "rotate(-90deg)", transition: "transform .12s" }}
+            />
+            Prompt instructions{instructions.trim() && !showInstructions ? " — active" : ""}
+          </button>
+          {showInstructions && (
+            <>
+              <textarea
+                value={instructions}
+                maxLength={MAX_GEN_INSTRUCTIONS}
+                onChange={(e) => onInstructionsChange(e.target.value)}
+                placeholder="Optional. Steer the generator — e.g. “Write the themes in Spanish”, “Focus on infrastructure and transit”, “Prefer broader themes, aim for 4–5”. The output format stays the same."
+                rows={3}
+                style={s.genInstructionsInput}
+              />
+              <div style={s.genInstructionsHint}>
+                Applied on the next Refresh. Affects wording, language, focus, and breadth only.
+              </div>
+            </>
+          )}
         </div>
 
         <div style={s.candidateList}>
@@ -1198,6 +1231,22 @@ export default function App() {
   const [showGenerate, setShowGenerate] = useState(false);
   const [genStatus, setGenStatus] = useState("idle"); // idle | loading | error
   const [genError, setGenError] = useState("");
+  // Optional free-text steer for the theme generator (output language,
+  // focus, breadth…). Persisted on its own so it survives reloads.
+  const [genInstructions, setGenInstructions] = useState(() => {
+    try {
+      return localStorage.getItem(GEN_INSTRUCTIONS_KEY) || "";
+    } catch (e) {
+      return "";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(GEN_INSTRUCTIONS_KEY, genInstructions);
+    } catch (e) {
+      /* ignore */
+    }
+  }, [genInstructions]);
   const [shareOpen, setShareOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // mobile slide-in panel
   const [dragging, setDragging] = useState(false); // a comment is being dragged onto a theme
@@ -1531,6 +1580,7 @@ export default function App() {
           comments: comments.map((c, i) => ({ id: String(i), table: c.tableName, text: c.text })),
           existingThemes: themes.map((t, i) => ({ id: String(i), text: t.text })),
           previousCandidates: candidates.map((c) => ({ text: c.text })),
+          customInstructions: genInstructions.trim().slice(0, MAX_GEN_INSTRUCTIONS),
         }),
       });
       if (!res.ok) {
@@ -1565,7 +1615,7 @@ export default function App() {
       );
       setGenStatus("error");
     }
-  }, [genStatus, comments, active, themes, candidates, commentById, setCandidates]);
+  }, [genStatus, comments, active, themes, candidates, commentById, setCandidates, genInstructions]);
 
   const openGenerate = () => {
     setShowGenerate(true);
@@ -1848,6 +1898,8 @@ export default function App() {
           candidates={candidates}
           themes={themes}
           resolveComments={(ids) => (ids || []).map((id) => commentById.get(id)).filter(Boolean)}
+          instructions={genInstructions}
+          onInstructionsChange={setGenInstructions}
           onRefresh={runGenerate}
           onClearAll={() => setCandidates(() => [])}
           onAccept={acceptCandidates}
@@ -2345,6 +2397,32 @@ const s = {
     padding: "7px 16px",
     borderRadius: 999,
   },
+  genInstructionsWrap: { padding: "10px 0 2px", borderBottom: `1px solid ${C.line}` },
+  genInstructionsToggle: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    color: C.mute,
+    fontSize: 11.5,
+    fontWeight: 800,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    padding: "4px 0",
+  },
+  genInstructionsInput: {
+    width: "100%",
+    marginTop: 8,
+    border: `1px solid ${C.line}`,
+    borderRadius: 8,
+    outline: "none",
+    resize: "vertical",
+    fontSize: 13,
+    lineHeight: 1.45,
+    color: C.ink,
+    padding: "9px 11px",
+    fontFamily: "inherit",
+  },
+  genInstructionsHint: { marginTop: 6, marginBottom: 4, fontSize: 11.5, color: C.faint },
   candidateList: { overflowY: "auto", marginTop: 4, flex: 1 },
   modalStateBox: {
     display: "flex",
